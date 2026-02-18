@@ -38,6 +38,7 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnName("primary_user_uid");
 
                     b.Property<string>("UserUID")
+                        .IsRequired()
                         .HasColumnType("character varying(10)")
                         .HasColumnName("user_uid");
 
@@ -153,6 +154,7 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnName("customize_data");
 
                     b.Property<string>("Description")
+                        .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("description");
 
@@ -247,6 +249,7 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnName("game_path");
 
                     b.Property<string>("FileCacheHash")
+                        .IsRequired()
                         .HasColumnType("character varying(40)")
                         .HasColumnName("file_cache_hash");
 
@@ -277,6 +280,7 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnName("game_path");
 
                     b.Property<string>("FilePath")
+                        .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("file_path");
 
@@ -304,6 +308,7 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnName("game_path");
 
                     b.Property<string>("Hash")
+                        .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("hash");
 
@@ -334,14 +339,17 @@ namespace MareSynchronosServer.Migrations
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
                     b.Property<string>("Description")
+                        .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("description");
 
                     b.Property<string>("PoseData")
+                        .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("pose_data");
 
                     b.Property<string>("WorldData")
+                        .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("world_data");
 
@@ -352,6 +360,109 @@ namespace MareSynchronosServer.Migrations
                         .HasDatabaseName("ix_chara_data_poses_parent_id");
 
                     b.ToTable("chara_data_poses", (string)null);
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.CharacterRpProfileData", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("CharacterName")
+                        .HasColumnType("text")
+                        .HasColumnName("character_name");
+
+                    b.Property<bool>("IsRpNSFW")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_rp_nsfw");
+
+                    b.Property<string>("RpAdditionalInfo")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_additional_info");
+
+                    b.Property<string>("RpAffiliation")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_affiliation");
+
+                    b.Property<string>("RpAge")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_age");
+
+                    b.Property<string>("RpAlignment")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_alignment");
+
+                    b.Property<string>("RpBuild")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_build");
+
+                    b.Property<string>("RpCustomFields")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_custom_fields");
+
+                    b.Property<string>("RpDescription")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_description");
+
+                    b.Property<string>("RpEthnicity")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_ethnicity");
+
+                    b.Property<string>("RpFirstName")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_first_name");
+
+                    b.Property<string>("RpHeight")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_height");
+
+                    b.Property<string>("RpLastName")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_last_name");
+
+                    b.Property<string>("RpNameColor")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_name_color");
+
+                    b.Property<string>("RpOccupation")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_occupation");
+
+                    b.Property<string>("RpProfilePictureBase64")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_profile_picture_base64");
+
+                    b.Property<string>("RpRace")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_race");
+
+                    b.Property<string>("RpResidence")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_residence");
+
+                    b.Property<string>("RpTitle")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_title");
+
+                    b.Property<string>("UserUID")
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("user_uid");
+
+                    b.Property<long>("WorldId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("world_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_character_rp_profiles");
+
+                    b.HasIndex("UserUID", "CharacterName", "WorldId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_character_rp_profiles_user_uid_character_name_world_id");
+
+                    b.ToTable("character_rp_profiles", (string)null);
                 });
 
             modelBuilder.Entity("MareSynchronosShared.Models.ClientPair", b =>
@@ -507,9 +618,17 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("invites_enabled");
 
+                    b.Property<bool>("IsPaused")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_paused");
+
                     b.Property<bool>("IsTemporary")
                         .HasColumnType("boolean")
                         .HasColumnName("is_temporary");
+
+                    b.Property<int>("MaxUserCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_user_count");
 
                     b.Property<string>("OwnerUID")
                         .HasColumnType("character varying(10)")
@@ -518,14 +637,6 @@ namespace MareSynchronosServer.Migrations
                     b.Property<bool>("PasswordTemporarilyDisabled")
                         .HasColumnType("boolean")
                         .HasColumnName("password_temporarily_disabled");
-
-                    b.Property<bool>("IsPaused")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_paused");
-
-                    b.Property<int>("MaxUserCount")
-                        .HasColumnType("integer")
-                        .HasColumnName("max_user_count");
 
                     b.HasKey("GID")
                         .HasName("pk_groups");
@@ -583,6 +694,10 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("character varying(10)")
                         .HasColumnName("group_user_uid");
 
+                    b.Property<bool>("CanPlacePings")
+                        .HasColumnType("boolean")
+                        .HasColumnName("can_place_pings");
+
                     b.Property<bool>("DisableAnimations")
                         .HasColumnType("boolean")
                         .HasColumnName("disable_animations");
@@ -607,10 +722,6 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_pinned");
 
-                    b.Property<bool>("CanPlacePings")
-                        .HasColumnType("boolean")
-                        .HasColumnName("can_place_pings");
-
                     b.HasKey("GroupGID", "GroupUserUID")
                         .HasName("pk_group_pairs");
 
@@ -630,29 +741,29 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("group_gid");
 
-                    b.Property<string>("Description")
+                    b.Property<string>("Base64BannerImage")
                         .HasColumnType("text")
-                        .HasColumnName("description");
-
-                    b.Property<string[]>("Tags")
-                        .HasColumnType("text[]")
-                        .HasColumnName("tags");
+                        .HasColumnName("base64banner_image");
 
                     b.Property<string>("Base64ProfileImage")
                         .HasColumnType("text")
                         .HasColumnName("base64profile_image");
 
-                    b.Property<string>("Base64BannerImage")
+                    b.Property<string>("Description")
                         .HasColumnType("text")
-                        .HasColumnName("base64banner_image");
+                        .HasColumnName("description");
+
+                    b.Property<bool>("IsDisabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_disabled");
 
                     b.Property<bool>("IsNSFW")
                         .HasColumnType("boolean")
                         .HasColumnName("is_nsfw");
 
-                    b.Property<bool>("IsDisabled")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_disabled");
+                    b.Property<string[]>("Tags")
+                        .HasColumnType("text[]")
+                        .HasColumnName("tags");
 
                     b.HasKey("GroupGID")
                         .HasName("pk_group_profiles");
@@ -685,6 +796,86 @@ namespace MareSynchronosServer.Migrations
                         .HasDatabaseName("ix_group_temp_invites_invite");
 
                     b.ToTable("group_temp_invites", (string)null);
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.HousingShare", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<byte[]>("CipherData")
+                        .HasColumnType("bytea")
+                        .HasColumnName("cipher_data");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<long>("DivisionId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("division_id");
+
+                    b.Property<long>("HouseId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("house_id");
+
+                    b.Property<long>("MapId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("map_id");
+
+                    b.Property<byte[]>("Nonce")
+                        .HasColumnType("bytea")
+                        .HasColumnName("nonce");
+
+                    b.Property<string>("OwnerUID")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("owner_uid");
+
+                    b.Property<long>("RoomId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("room_id");
+
+                    b.Property<byte[]>("Salt")
+                        .HasColumnType("bytea")
+                        .HasColumnName("salt");
+
+                    b.Property<long>("ServerId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("server_id");
+
+                    b.Property<byte[]>("Tag")
+                        .HasColumnType("bytea")
+                        .HasColumnName("tag");
+
+                    b.Property<long>("TerritoryId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("territory_id");
+
+                    b.Property<DateTime?>("UpdatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<long>("WardId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("ward_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_housing_shares");
+
+                    b.HasIndex("OwnerUID")
+                        .HasDatabaseName("ix_housing_shares_owner_uid");
+
+                    b.HasIndex("ServerId", "TerritoryId", "DivisionId", "WardId", "HouseId")
+                        .HasDatabaseName("ix_housing_shares_server_id_territory_id_division_id_ward_id_h");
+
+                    b.ToTable("housing_shares", (string)null);
                 });
 
             modelBuilder.Entity("MareSynchronosShared.Models.LodeStoneAuth", b =>
@@ -818,6 +1009,78 @@ namespace MareSynchronosServer.Migrations
                     b.ToTable("mcdf_share_allowed_users", (string)null);
                 });
 
+            modelBuilder.Entity("MareSynchronosShared.Models.Slot", b =>
+                {
+                    b.Property<Guid>("SlotId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("slot_id");
+
+                    b.Property<long>("DivisionId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("division_id");
+
+                    b.Property<string>("GroupGID")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("group_gid");
+
+                    b.Property<long>("PlotId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("plot_id");
+
+                    b.Property<float>("Radius")
+                        .HasColumnType("real")
+                        .HasColumnName("radius");
+
+                    b.Property<long>("ServerId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("server_id");
+
+                    b.Property<string>("SlotDescription")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("slot_description");
+
+                    b.Property<string>("SlotName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("slot_name");
+
+                    b.Property<long>("TerritoryId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("territory_id");
+
+                    b.Property<long>("WardId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("ward_id");
+
+                    b.Property<float>("X")
+                        .HasColumnType("real")
+                        .HasColumnName("x");
+
+                    b.Property<float>("Y")
+                        .HasColumnType("real")
+                        .HasColumnName("y");
+
+                    b.Property<float>("Z")
+                        .HasColumnType("real")
+                        .HasColumnName("z");
+
+                    b.HasKey("SlotId")
+                        .HasName("pk_slots");
+
+                    b.HasIndex("GroupGID")
+                        .HasDatabaseName("ix_slots_group_gid");
+
+                    b.HasIndex("ServerId", "TerritoryId", "WardId", "PlotId")
+                        .HasDatabaseName("ix_slots_server_id_territory_id_ward_id_plot_id");
+
+                    b.ToTable("slots", (string)null);
+                });
+
             modelBuilder.Entity("MareSynchronosShared.Models.User", b =>
                 {
                     b.Property<string>("UID")
@@ -933,6 +1196,8 @@ namespace MareSynchronosServer.Migrations
                     b.HasOne("MareSynchronosShared.Models.User", "User")
                         .WithMany()
                         .HasForeignKey("UserUID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
                         .HasConstraintName("fk_auth_users_user_uid");
 
                     b.Navigation("PrimaryUser");
@@ -996,6 +1261,7 @@ namespace MareSynchronosServer.Migrations
                         .WithMany()
                         .HasForeignKey("FileCacheHash")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
                         .HasConstraintName("fk_chara_data_files_files_file_cache_hash");
 
                     b.HasOne("MareSynchronosShared.Models.CharaData", "Parent")
@@ -1044,6 +1310,16 @@ namespace MareSynchronosServer.Migrations
                         .HasConstraintName("fk_chara_data_poses_chara_data_parent_id_parent_uploader_uid");
 
                     b.Navigation("Parent");
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.CharacterRpProfileData", b =>
+                {
+                    b.HasOne("MareSynchronosShared.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserUID")
+                        .HasConstraintName("fk_character_rp_profiles_users_user_uid");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("MareSynchronosShared.Models.ClientPair", b =>
@@ -1160,6 +1436,17 @@ namespace MareSynchronosServer.Migrations
                     b.Navigation("Group");
                 });
 
+            modelBuilder.Entity("MareSynchronosShared.Models.HousingShare", b =>
+                {
+                    b.HasOne("MareSynchronosShared.Models.User", "Owner")
+                        .WithMany()
+                        .HasForeignKey("OwnerUID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_housing_shares_users_owner_uid");
+
+                    b.Navigation("Owner");
+                });
+
             modelBuilder.Entity("MareSynchronosShared.Models.LodeStoneAuth", b =>
                 {
                     b.HasOne("MareSynchronosShared.Models.User", "User")
@@ -1203,6 +1490,18 @@ namespace MareSynchronosServer.Migrations
                         .HasConstraintName("fk_mcdf_share_allowed_users_mcdf_shares_share_id");
 
                     b.Navigation("Share");
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.Slot", b =>
+                {
+                    b.HasOne("MareSynchronosShared.Models.Group", "Group")
+                        .WithMany()
+                        .HasForeignKey("GroupGID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_slots_groups_group_gid");
+
+                    b.Navigation("Group");
                 });
 
             modelBuilder.Entity("MareSynchronosShared.Models.UserProfileData", b =>

@@ -50,4 +50,6 @@ public class MetricsAPI
     public const string GaugeHubConcurrencyAvailable = "mare_hub_concurrency_available";
     public const string GaugeHubConcurrencyQueued = "mare_hub_concurrency_queued";
     public const string CounterHubConcurrencyRejected = "mare_hub_concurrency_rejected";
+    public const string GaugeQuestSessions = "mare_quest_sessions";
+    public const string GaugeQuestSessionUsers = "mare_quest_session_users";
 }

@@ -4,6 +4,7 @@ using UmbraSync.API.Dto;
 using UmbraSync.API.Dto.CharaData;
 using UmbraSync.API.Dto.Group;
 using UmbraSync.API.Dto.Ping;
+using UmbraSync.API.Dto.QuestSync;
 using UmbraSync.API.Dto.User;
 
 namespace MareSynchronosServer.Hubs
@@ -63,5 +64,11 @@ namespace MareSynchronosServer.Hubs
         public Task Client_GposeLobbyPushCharacterData(CharaDataDownloadDto charaDownloadDto) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
         public Task Client_GposeLobbyPushPoseData(UserData userData, PoseData poseData) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
         public Task Client_GposeLobbyPushWorldData(UserData userData, WorldData worldData) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
+
+        public Task Client_QuestSessionJoin(UserData userData) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
+        public Task Client_QuestSessionLeave(UserData userData) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
+        public Task Client_QuestSessionStateUpdate(UserData sender, QuestSessionStateDto state) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
+        public Task Client_QuestSessionEventTriggered(UserData sender, QuestEventTriggerDto trigger) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
+        public Task Client_QuestSessionBranchingChoice(UserData sender, QuestBranchingChoiceDto choice) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
     }
 }

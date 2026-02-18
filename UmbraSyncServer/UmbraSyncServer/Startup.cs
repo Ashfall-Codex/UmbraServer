@@ -312,7 +312,9 @@ public class Startup
             MetricsAPI.GaugePairCacheUsers,
             MetricsAPI.GaugePairCacheEntries,
             MetricsAPI.GaugeHubConcurrencyAvailable,
-            MetricsAPI.GaugeHubConcurrencyQueued
+            MetricsAPI.GaugeHubConcurrencyQueued,
+            MetricsAPI.GaugeQuestSessions,
+            MetricsAPI.GaugeQuestSessionUsers
         }));
     }
 

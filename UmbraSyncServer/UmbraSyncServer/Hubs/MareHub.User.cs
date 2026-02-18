@@ -254,6 +254,8 @@ public partial class MareHub
             rpData?.RpRace, rpData?.RpEthnicity,
             rpData?.RpHeight, rpData?.RpBuild, rpData?.RpResidence, rpData?.RpOccupation, rpData?.RpAffiliation,
             rpData?.RpAlignment, rpData?.RpAdditionalInfo,
+            rpData?.RpNameColor,
+            rpData?.RpCustomFields,
             rpData?.CharacterName, rpData?.WorldId);
     }
 
@@ -590,6 +592,8 @@ public partial class MareHub
                 if (dto.RpAffiliation != null) existingRpData.RpAffiliation = dto.RpAffiliation;
                 if (dto.RpAlignment != null) existingRpData.RpAlignment = dto.RpAlignment;
                 if (dto.RpAdditionalInfo != null) existingRpData.RpAdditionalInfo = dto.RpAdditionalInfo;
+                if (dto.RpNameColor != null) existingRpData.RpNameColor = dto.RpNameColor;
+                if (dto.RpCustomFields != null) existingRpData.RpCustomFields = dto.RpCustomFields;
             }
             else
             {
@@ -613,7 +617,9 @@ public partial class MareHub
                     RpOccupation = dto.RpOccupation ?? null,
                     RpAffiliation = dto.RpAffiliation ?? null,
                     RpAlignment = dto.RpAlignment ?? null,
-                    RpAdditionalInfo = dto.RpAdditionalInfo ?? null
+                    RpAdditionalInfo = dto.RpAdditionalInfo ?? null,
+                    RpNameColor = dto.RpNameColor ?? null,
+                    RpCustomFields = dto.RpCustomFields ?? null
                 };
                 await DbContext.CharacterRpProfiles.AddAsync(rpProfileData).ConfigureAwait(false);
             }

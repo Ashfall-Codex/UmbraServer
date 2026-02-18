@@ -32,4 +32,6 @@ public class CharacterRpProfileData
     public string? RpAffiliation { get; set; }
     public string? RpAlignment { get; set; }
     public string? RpAdditionalInfo { get; set; }
+    public string? RpNameColor { get; set; }
+    public string? RpCustomFields { get; set; }
 }

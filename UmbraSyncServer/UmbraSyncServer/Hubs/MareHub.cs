@@ -200,6 +200,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
                     if (string.IsNullOrEmpty(activeConnectionId) || string.Equals(activeConnectionId, Context.ConnectionId, StringComparison.Ordinal))
                     {
                         await GposeLobbyLeave().ConfigureAwait(false);
+                        await QuestSessionLeave().ConfigureAwait(false);
                         await RemoveUserFromRedis().ConfigureAwait(false);
                         await SendOfflineToAllPairedUsers().ConfigureAwait(false);
                         await _pairCacheService.DisposePlayer(UserUID).ConfigureAwait(false);

@@ -58,6 +58,7 @@ public class MareDbContext : DbContext
     public DbSet<McdfShareAllowedUser> McdfShareAllowedUsers { get; set; }
     public DbSet<McdfShareAllowedGroup> McdfShareAllowedGroups { get; set; }
     public DbSet<GroupProfile> GroupProfiles { get; set; }
+    public DbSet<HousingShare> HousingShares { get; set; }
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -67,6 +68,7 @@ public class MareDbContext : DbContext
         ConfigureCharaDataEntities(mb);
         ConfigureMcdfShareEntities(mb);
         ConfigureSlotEntities(mb);
+        ConfigureHousingShareEntities(mb);
     }
 
     private static void ConfigureSlotEntities(ModelBuilder mb)
@@ -202,5 +204,27 @@ public class MareDbContext : DbContext
         mb.Entity<McdfShareAllowedGroup>().ToTable("mcdf_share_allowed_groups");
         mb.Entity<McdfShareAllowedGroup>().HasKey(g => new { g.ShareId, g.AllowedGroupGid });
         mb.Entity<McdfShareAllowedGroup>().HasIndex(g => g.AllowedGroupGid);
+    }
+
+    private static void ConfigureHousingShareEntities(ModelBuilder mb)
+    {
+        mb.Entity<HousingShare>().ToTable("housing_shares");
+        mb.Entity<HousingShare>().HasIndex(s => s.OwnerUID);
+        mb.Entity<HousingShare>().HasIndex(s => new { s.ServerId, s.TerritoryId, s.DivisionId, s.WardId, s.HouseId });
+        mb.Entity<HousingShare>().HasOne(s => s.Owner).WithMany().HasForeignKey(s => s.OwnerUID).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<HousingShare>().Property(s => s.Description).HasColumnType("text");
+        mb.Entity<HousingShare>().Property(s => s.ServerId).HasColumnType("bigint");
+        mb.Entity<HousingShare>().Property(s => s.MapId).HasColumnType("bigint");
+        mb.Entity<HousingShare>().Property(s => s.TerritoryId).HasColumnType("bigint");
+        mb.Entity<HousingShare>().Property(s => s.DivisionId).HasColumnType("bigint");
+        mb.Entity<HousingShare>().Property(s => s.WardId).HasColumnType("bigint");
+        mb.Entity<HousingShare>().Property(s => s.HouseId).HasColumnType("bigint");
+        mb.Entity<HousingShare>().Property(s => s.RoomId).HasColumnType("bigint");
+        mb.Entity<HousingShare>().Property(s => s.CipherData).HasColumnType("bytea");
+        mb.Entity<HousingShare>().Property(s => s.Nonce).HasColumnType("bytea");
+        mb.Entity<HousingShare>().Property(s => s.Salt).HasColumnType("bytea");
+        mb.Entity<HousingShare>().Property(s => s.Tag).HasColumnType("bytea");
+        mb.Entity<HousingShare>().Property(s => s.CreatedUtc).HasColumnType("timestamp with time zone");
+        mb.Entity<HousingShare>().Property(s => s.UpdatedUtc).HasColumnType("timestamp with time zone");
     }
 }
