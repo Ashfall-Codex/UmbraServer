@@ -26,6 +26,49 @@ public partial class MareHub
         var userProfileData = await DbContext.UserProfileData.SingleOrDefaultAsync(u => u.UserUID == user.UID).ConfigureAwait(false);
         var bannedEntries = await DbContext.GroupBans.Where(u => u.BannedUserUID == user.UID).ToListAsync().ConfigureAwait(false);
 
+        // RGPD: cascade delete RP profiles
+        var rpProfiles = await DbContext.CharacterRpProfiles.Where(r => r.UserUID == user.UID).ToListAsync().ConfigureAwait(false);
+        DbContext.CharacterRpProfiles.RemoveRange(rpProfiles);
+
+        // RGPD: cascade delete CharaData (files, poses, swaps, originals, allowances are cascade-deleted by EF)
+        var charaData = await DbContext.CharaData
+            .Include(c => c.Files)
+            .Include(c => c.Poses)
+            .Include(c => c.FileSwaps)
+            .Include(c => c.OriginalFiles)
+            .Include(c => c.AllowedIndividiuals)
+            .Where(c => c.UploaderUID == user.UID).ToListAsync().ConfigureAwait(false);
+        DbContext.CharaData.RemoveRange(charaData);
+
+        // RGPD: cascade delete MCDF shares (allowed users/groups are cascade-deleted by EF)
+        var mcdfShares = await DbContext.McdfShares
+            .Include(s => s.AllowedIndividuals)
+            .Include(s => s.AllowedSyncshells)
+            .Where(s => s.OwnerUID == user.UID).ToListAsync().ConfigureAwait(false);
+        DbContext.McdfShares.RemoveRange(mcdfShares);
+
+        // RGPD: cascade delete housing shares
+        var housingShares = await DbContext.HousingShares.Where(h => h.OwnerUID == user.UID).ToListAsync().ConfigureAwait(false);
+        DbContext.HousingShares.RemoveRange(housingShares);
+
+        // RGPD: cascade delete uploaded files
+        var uploadedFiles = await DbContext.Files.Where(f => f.UploaderUID == user.UID).ToListAsync().ConfigureAwait(false);
+        DbContext.Files.RemoveRange(uploadedFiles);
+
+        // RGPD: anonymize profile reports (keep for audit but remove UID reference)
+        var reportsAboutUser = await DbContext.UserProfileReports.Where(r => r.ReportedUserUID == user.UID).ToListAsync().ConfigureAwait(false);
+        foreach (var report in reportsAboutUser) report.ReportedUserUID = "[deleted]";
+        var reportsByUser = await DbContext.UserProfileReports.Where(r => r.ReportingUserUID == user.UID).ToListAsync().ConfigureAwait(false);
+        foreach (var report in reportsByUser) report.ReportingUserUID = "[deleted]";
+
+        // RGPD: remove allowances where user is the allowed party
+        var allowancesForUser = await DbContext.CharaDataAllowances.Where(a => a.AllowedUserUID == user.UID).ToListAsync().ConfigureAwait(false);
+        DbContext.CharaDataAllowances.RemoveRange(allowancesForUser);
+
+        // RGPD: remove MCDF share allowed entries where user is the allowed party
+        var mcdfAllowedForUser = await DbContext.McdfShareAllowedUsers.Where(a => a.AllowedIndividualUid == user.UID).ToListAsync().ConfigureAwait(false);
+        DbContext.McdfShareAllowedUsers.RemoveRange(mcdfAllowedForUser);
+
         if (lodestone != null)
         {
             DbContext.Remove(lodestone);
