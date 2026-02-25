@@ -1,4 +1,4 @@
 [submodule "UmbraAPI"]
 	path = UmbraAPI
-	url = git@github.com:kedaewyn/UmbraAPI.git
+	url = https://github.com/Ashfall-Codex/UmbraAPI.git
 	branch = main
