@@ -422,6 +422,42 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
             totalScanned, inSync, missing, sizeMismatch, skippedTemp, skippedPending, queued);
     }
 
+    public async Task<int> DeleteS3ObjectsAsync(IEnumerable<string> hashes, CancellationToken ct)
+    {
+        if (_s3Client == null) return 0;
+
+        var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
+        var deleted = 0;
+
+        foreach (var batch in hashes.Chunk(1000))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var request = new DeleteObjectsRequest
+            {
+                BucketName = bucketName,
+                Objects = batch.Select(h => new KeyVersion { Key = GetS3Key(h) }).ToList()
+            };
+
+            try
+            {
+                var response = await _s3Client.DeleteObjectsAsync(request, ct).ConfigureAwait(false);
+                deleted += response.DeletedObjects.Count;
+
+                foreach (var error in response.DeleteErrors)
+                {
+                    _logger.LogWarning("S3 delete error for key {Key}: {Code} - {Message}", error.Key, error.Code, error.Message);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "S3 batch delete failed for {Count} objects", batch.Length);
+            }
+        }
+
+        return deleted;
+    }
+
     public async Task<HashSet<string>> GetS3HashSetAsync(CancellationToken ct)
     {
         var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

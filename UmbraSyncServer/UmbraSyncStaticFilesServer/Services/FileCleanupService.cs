@@ -309,6 +309,8 @@ public class FileCleanupService : IHostedService
 
                 if (_isMain)
                 {
+                    HashSet<string> s3Hashes = null;
+
                     if (!_useColdStorage)
                     {
                         var filesToDeleteFromDb = removedHotFiles;
@@ -317,7 +319,7 @@ public class FileCleanupService : IHostedService
                         {
                             try
                             {
-                                var s3Hashes = await _scaleway.GetS3HashSetAsync(ct).ConfigureAwait(false);
+                                s3Hashes = await _scaleway.GetS3HashSetAsync(ct).ConfigureAwait(false);
                                 var onS3 = removedHotFiles.Where(h => s3Hashes.Contains(h)).ToList();
                                 filesToDeleteFromDb = removedHotFiles.Where(h => !s3Hashes.Contains(h)).ToList();
                                 if (onS3.Count > 0)
@@ -336,6 +338,31 @@ public class FileCleanupService : IHostedService
                     }
 
                     CleanUpOrphanedFiles(allDbFileHashes, hotFiles, ct);
+
+                    // Nettoyage des fichiers orphelins sur S3
+                    if (_scaleway.IsEnabled)
+                    {
+                        try
+                        {
+                            s3Hashes ??= await _scaleway.GetS3HashSetAsync(ct).ConfigureAwait(false);
+                            var s3Orphans = s3Hashes.Where(h => !allDbFileHashes.Contains(h.ToUpperInvariant())).ToList();
+
+                            if (s3Orphans.Count > 0)
+                            {
+                                _logger.LogInformation("Cleanup: {Count} orphaned files found on S3, deleting...", s3Orphans.Count);
+                                var deleted = await _scaleway.DeleteS3ObjectsAsync(s3Orphans, ct).ConfigureAwait(false);
+                                _logger.LogInformation("Cleanup: deleted {Deleted} orphaned files from S3", deleted);
+                            }
+                            else
+                            {
+                                _logger.LogInformation("Cleanup: no orphaned files on S3");
+                            }
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            _logger.LogWarning(ex, "Failed to clean up orphaned S3 files");
+                        }
+                    }
 
                     await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
                 }
