@@ -422,6 +422,37 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
             totalScanned, inSync, missing, sizeMismatch, skippedTemp, skippedPending, queued);
     }
 
+    public async Task<HashSet<string>> GetS3HashSetAsync(CancellationToken ct)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (_s3Client == null) return result;
+
+        var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
+        string? continuationToken = null;
+
+        do
+        {
+            var listRequest = new ListObjectsV2Request
+            {
+                BucketName = bucketName,
+                MaxKeys = 1000,
+                ContinuationToken = continuationToken
+            };
+
+            var response = await _s3Client.ListObjectsV2Async(listRequest, ct).ConfigureAwait(false);
+            foreach (var obj in response.S3Objects)
+            {
+                var slashIdx = obj.Key.IndexOf('/');
+                var hash = slashIdx >= 0 ? obj.Key[(slashIdx + 1)..] : obj.Key;
+                result.Add(hash);
+            }
+
+            continuationToken = response.IsTruncated ? response.NextContinuationToken : null;
+        } while (continuationToken != null);
+
+        return result;
+    }
+
     private static string GetS3Key(string hash)
     {
         return $"{hash[0]}/{hash}";

@@ -18,6 +18,7 @@ public class FileCleanupService : IHostedService
     private readonly ILogger<FileCleanupService> _logger;
     private readonly MareMetrics _metrics;
     private readonly IServiceProvider _services;
+    private readonly ScalewayStorageService _scaleway;
 
     private readonly string _hotStoragePath;
     private readonly string _coldStoragePath;
@@ -54,12 +55,14 @@ public class FileCleanupService : IHostedService
                 .Where(f => f != null && (f.Name.EndsWith(".dl", StringComparison.InvariantCultureIgnoreCase) || f.Name.EndsWith(".tmp", StringComparison.InvariantCultureIgnoreCase))).ToList();
 
     public FileCleanupService(MareMetrics metrics, ILogger<FileCleanupService> logger,
-        IServiceProvider services, IConfigurationService<StaticFilesServerConfiguration> configuration)
+        IServiceProvider services, IConfigurationService<StaticFilesServerConfiguration> configuration,
+        ScalewayStorageService scaleway)
     {
         _metrics = metrics;
         _logger = logger;
         _services = services;
         _configuration = configuration;
+        _scaleway = scaleway;
         _useColdStorage = _configuration.GetValueOrDefault(nameof(StaticFilesServerConfiguration.UseColdStorage), false);
         _hotStoragePath = configuration.GetValue<string>(nameof(StaticFilesServerConfiguration.CacheDirectory));
         _coldStoragePath = configuration.GetValue<string>(nameof(StaticFilesServerConfiguration.ColdStorageDirectory));
@@ -306,13 +309,30 @@ public class FileCleanupService : IHostedService
 
                 if (_isMain)
                 {
-                    // If cold storage is not active, then "hot" files are deleted from the database instead
                     if (!_useColdStorage)
                     {
+                        var filesToDeleteFromDb = removedHotFiles;
+
+                        if (_scaleway.IsEnabled)
+                        {
+                            try
+                            {
+                                var s3Hashes = await _scaleway.GetS3HashSetAsync(ct).ConfigureAwait(false);
+                                var onS3 = removedHotFiles.Where(h => s3Hashes.Contains(h)).ToList();
+                                filesToDeleteFromDb = removedHotFiles.Where(h => !s3Hashes.Contains(h)).ToList();
+                                if (onS3.Count > 0)
+                                    _logger.LogInformation("Cleanup: {Count} files preserved in DB (backed by S3)", onS3.Count);
+                            }
+                            catch (Exception ex) when (ex is not OperationCanceledException)
+                            {
+                                _logger.LogWarning(ex, "Failed to list S3 objects, falling back to full DB cleanup for removed hot files");
+                            }
+                        }
+
                         dbContext.Files.RemoveRange(
-                            dbContext.Files.Where(f => removedHotFiles.Contains(f.Hash))
+                            dbContext.Files.Where(f => filesToDeleteFromDb.Contains(f.Hash))
                         );
-                        allDbFileHashes.ExceptWith(removedHotFiles);
+                        allDbFileHashes.ExceptWith(filesToDeleteFromDb);
                     }
 
                     CleanUpOrphanedFiles(allDbFileHashes, hotFiles, ct);
