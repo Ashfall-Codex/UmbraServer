@@ -41,7 +41,7 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
         InitializeS3Client();
         _processingTask = ProcessUploadQueueAsync(_cts.Token);
         _periodicScanTask = PeriodicSyncScanAsync(_cts.Token);
-        _logger.LogInformation("Scaleway storage service started (sync scan at startup + every 10 minutes)");
+        _logger.LogInformation("Scaleway storage service started (sync scan at startup + every 5 minutes)");
         return Task.CompletedTask;
     }
 
@@ -108,6 +108,16 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
         {
             return false;
         }
+        catch (AmazonS3Exception ex)
+        {
+            _logger.LogWarning(ex, "S3 HEAD request failed for {Hash} (HTTP {StatusCode}), assuming file does not exist", hash, ex.StatusCode);
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "S3 HEAD request error for {Hash}, assuming file does not exist", hash);
+            return false;
+        }
     }
 
     // --- Traitement de la queue d'upload ---
@@ -121,8 +131,18 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
                 if (_uploadQueue.TryDequeue(out var item))
                 {
                     await _uploadSemaphore.WaitAsync(ct).ConfigureAwait(false);
-                    _ = UploadFileWithCheckAsync(item.Hash, item.FilePath, ct)
-                        .ContinueWith(_ => _uploadSemaphore.Release(), TaskScheduler.Default);
+                    var capturedItem = item;
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await UploadFileWithCheckAsync(capturedItem.Hash, capturedItem.FilePath, ct).ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            _uploadSemaphore.Release();
+                        }
+                    }, ct);
                 }
                 else
                 {
@@ -153,7 +173,6 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
                 return;
             }
 
-            // Vérifier si le fichier existe déjà sur S3
             if (await FileExistsAsync(hash, ct).ConfigureAwait(false))
             {
                 _logger.LogDebug("File {Hash} already exists on S3, skipping upload", hash);
@@ -161,6 +180,14 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
             }
 
             await UploadFileAsync(hash, filePath, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "S3 upload check/upload failed for {Hash}, re-queuing for next sync scan", hash);
         }
         finally
         {
@@ -203,8 +230,34 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
                 };
 
                 await transferUtility.UploadAsync(uploadRequest, ct).ConfigureAwait(false);
-                _logger.LogInformation("S3 upload success: {Hash} ({Size} bytes)", hash, fileSize);
-                return;
+
+                // Vérification post-upload : HEAD request pour confirmer la persistance sur Scaleway
+                try
+                {
+                    await _s3Client.GetObjectMetadataAsync(bucketName, key, ct).ConfigureAwait(false);
+                    _logger.LogInformation("S3 upload success: {Hash} ({Size} bytes)", hash, fileSize);
+                    return;
+                }
+                catch (AmazonS3Exception verifyEx) when (verifyEx.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    _logger.LogWarning("S3 upload for {Hash} returned success but HEAD verification failed (not found), attempt {Attempt}/{MaxRetries}",
+                        hash, attempt, maxRetries);
+                }
+                catch (Exception verifyEx) when (verifyEx is not OperationCanceledException)
+                {
+                    _logger.LogWarning(verifyEx, "S3 upload for {Hash} returned success but HEAD verification errored, attempt {Attempt}/{MaxRetries}",
+                        hash, attempt, maxRetries);
+                }
+
+                if (attempt < maxRetries)
+                {
+                    var verifyDelay = TimeSpan.FromSeconds(3 * attempt);
+                    await Task.Delay(verifyDelay, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    _logger.LogError("S3 upload abandoned: {Hash} after {MaxRetries} attempts (upload succeeds but verification fails)", hash, maxRetries);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -227,8 +280,8 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
 
     private async Task PeriodicSyncScanAsync(CancellationToken ct)
     {
-        // Scan immédiat au démarrage (attendre 10s pour l'init du serveur)
-        try { await Task.Delay(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false); }
+        // Scan immédiat au démarrage (attendre 5s pour l'init du serveur)
+        try { await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return; }
 
         while (!ct.IsCancellationRequested)
@@ -246,8 +299,8 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
                 _logger.LogError(ex, "Error during periodic S3 sync scan");
             }
 
-            // Scan toutes les 10 minutes
-            try { await Task.Delay(TimeSpan.FromMinutes(10), ct).ConfigureAwait(false); }
+            // Scan toutes les 5 minutes
+            try { await Task.Delay(TimeSpan.FromMinutes(5), ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
         }
     }
@@ -312,6 +365,11 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
                 ct.ThrowIfCancellationRequested();
 
                 var hash = Path.GetFileName(filePath);
+
+                // Ignorer les fichiers temporaires (uploads en cours)
+                if (hash.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
+                    || hash.EndsWith(".dl", StringComparison.OrdinalIgnoreCase))
+                    continue;
 
                 // Ignorer si déjà sur S3 ou déjà dans la queue
                 if (s3Keys.Contains(hash)) continue;
