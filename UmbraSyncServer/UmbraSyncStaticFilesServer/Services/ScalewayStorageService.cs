@@ -275,8 +275,10 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
                 // Vérification post-upload : HEAD request pour confirmer la persistance sur Scaleway
                 try
                 {
-                    await _s3Client.GetObjectMetadataAsync(bucketName, key, ct).ConfigureAwait(false);
+                    var metadata = await _s3Client.GetObjectMetadataAsync(bucketName, key, ct).ConfigureAwait(false);
                     _logger.LogInformation("S3 upload success: {Hash} ({Size} bytes)", hash, fileSize);
+                    try { File.SetLastWriteTimeUtc(filePath, metadata.LastModified.ToUniversalTime()); }
+                    catch { /* fichier peut avoir été supprimé entre-temps */ }
                     return;
                 }
                 catch (AmazonS3Exception verifyEx) when (verifyEx.StatusCode == System.Net.HttpStatusCode.NotFound)
