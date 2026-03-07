@@ -100,6 +100,7 @@ public class ServerFilesController : ControllerBase
         string BuildDirectDownloadUrl(string hash)
         {
             if (!_scalewayStorage.IsEnabled) return string.Empty;
+            if (_scalewayStorage.IsPendingUpload(hash)) return string.Empty;
             var cdnUrl = DefaultCdnUrlSafely()?.ToString().TrimEnd('/');
             if (string.IsNullOrEmpty(cdnUrl)) return string.Empty;
             return $"{cdnUrl}/{hash[0]}/{hash}";

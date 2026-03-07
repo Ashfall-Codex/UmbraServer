@@ -12,7 +12,7 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
     private readonly IConfigurationService<StaticFilesServerConfiguration> _config;
     private readonly ILogger<ScalewayStorageService> _logger;
     private readonly ConcurrentQueue<(string Hash, string FilePath)> _uploadQueue = new();
-    private readonly SemaphoreSlim _uploadSemaphore = new(3);
+    private readonly SemaphoreSlim _uploadSemaphore = new(10);
     private readonly CancellationTokenSource _cts = new();
     private IAmazonS3? _s3Client;
     private Task? _processingTask;
@@ -25,6 +25,8 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
     private const int MaxRequeueRetries = 3;
 
     public bool IsEnabled => _config.GetValueOrDefault(nameof(StaticFilesServerConfiguration.ScalewayEnabled), false);
+    public bool IsPendingUpload(string hash)
+        => _pendingUploads.ContainsKey(hash) || _recentUploads.ContainsKey(hash);
 
     public ScalewayStorageService(
         IConfigurationService<StaticFilesServerConfiguration> config,
