@@ -86,6 +86,9 @@ public class MareDbContext : DbContext
         mb.Entity<User>().ToTable("users");
         mb.Entity<FileCache>().ToTable("file_caches");
         mb.Entity<FileCache>().HasIndex(c => c.UploaderUID);
+        mb.Entity<FileCache>().HasIndex(c => c.S3Confirmed);
+        mb.Entity<FileCache>().Property(c => c.S3Confirmed).HasDefaultValue(false);
+        mb.Entity<FileCache>().Property(c => c.S3ConfirmedAt).HasColumnType("timestamp with time zone");
         mb.Entity<ClientPair>().ToTable("client_pairs");
         mb.Entity<ClientPair>().HasKey(u => new { u.UserUID, u.OtherUserUID });
         mb.Entity<ClientPair>().HasIndex(c => c.UserUID);

@@ -28,6 +28,7 @@ public class ServerFilesController : ControllerBase
 {
     private static readonly SemaphoreSlim _fileLockDictLock = new(1);
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> _fileUploadLocks = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, DateTime> _cdnMissRateLimit = new(StringComparer.Ordinal);
     private readonly string _basePath;
     private readonly CachedFileProvider _cachedFileProvider;
     private readonly IConfigurationService<StaticFilesServerConfiguration> _configuration;
@@ -61,8 +62,9 @@ public class ServerFilesController : ControllerBase
     public async Task<IActionResult> FilesGetSizes([FromBody] List<string> hashes)
     {
         var requested = (hashes ?? new List<string>())
-            .Where(h => !string.IsNullOrWhiteSpace(h))
+            .Where(h => !string.IsNullOrWhiteSpace(h) && h.Length == 40 && h.All(c => char.IsAsciiHexDigit(c)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(500)
             .ToList();
 
         if (requested.Count == 0)
@@ -75,11 +77,11 @@ public class ServerFilesController : ControllerBase
         var cacheFiles = await _mareDbContext.Files
             .AsNoTracking()
             .Where(f => requested.Contains(f.Hash))
-            .Select(k => new { k.Hash, k.Size, k.UploadDate })
+            .Select(k => new { k.Hash, k.Size, k.S3Confirmed })
             .ToListAsync().ConfigureAwait(false);
 
         var cacheDict = cacheFiles.ToDictionary(k => k.Hash, k => k.Size, StringComparer.OrdinalIgnoreCase);
-        var uploadDateDict = cacheFiles.ToDictionary(k => k.Hash, k => k.UploadDate, StringComparer.OrdinalIgnoreCase);
+        var s3ConfirmedDict = cacheFiles.ToDictionary(k => k.Hash, k => k.S3Confirmed, StringComparer.OrdinalIgnoreCase);
         var forbiddenDict = forbiddenFiles.ToDictionary(f => f.Hash, f => f, StringComparer.OrdinalIgnoreCase);
         var shardsConfig = _configuration.GetValueOrDefault<ICollection<CdnShardConfiguration>>(
             nameof(StaticFilesServerConfiguration.CdnShardConfiguration),
@@ -98,13 +100,10 @@ public class ServerFilesController : ControllerBase
             catch { return false; }
         }
 
-        var recentUploadCutoff = DateTime.UtcNow - TimeSpan.FromMinutes(20);
-
         string BuildDirectDownloadUrl(string hash)
         {
             if (!_scalewayStorage.IsEnabled) return string.Empty;
-            if (_scalewayStorage.IsPendingUpload(hash)) return string.Empty;
-            if (uploadDateDict.TryGetValue(hash, out var uploadDate) && uploadDate > recentUploadCutoff) return string.Empty;
+            if (!s3ConfirmedDict.TryGetValue(hash, out var confirmed) || !confirmed) return string.Empty;
             var cdnUrl = DefaultCdnUrlSafely()?.ToString().TrimEnd('/');
             if (string.IsNullOrEmpty(cdnUrl)) return string.Empty;
             return $"{cdnUrl}/{hash[0]}/{hash}";
@@ -315,33 +314,43 @@ public class ServerFilesController : ControllerBase
             }
             catch
             {
-                try
-                {
-                    System.IO.File.Delete(tmpPath);
-                }
-                catch { }
+                try { System.IO.File.Delete(tmpPath); } catch { }
+                // If the file was already moved to its final path, clean it up too
+                try { System.IO.File.Delete(path); } catch { }
                 throw;
             }
 
-            // update on db
-            await _mareDbContext.Files.AddAsync(new FileCache()
+            try
             {
-                Hash = hash,
-                UploadDate = DateTime.UtcNow,
-                UploaderUID = MareUser,
-                Size = compressedSize,
-                Uploaded = true
-            }).ConfigureAwait(false);
-            await _mareDbContext.SaveChangesAsync().ConfigureAwait(false);
+                // update on db — S3Confirmed=false, le worker S3 le sync automatiquement
+                await _mareDbContext.Files.AddAsync(new FileCache()
+                {
+                    Hash = hash,
+                    UploadDate = DateTime.UtcNow,
+                    UploaderUID = MareUser,
+                    Size = compressedSize,
+                    Uploaded = true,
+                    S3Confirmed = false,
+                    S3ConfirmedAt = null
+                }).ConfigureAwait(false);
+                await _mareDbContext.SaveChangesAsync().ConfigureAwait(false);
 
-            _metricsClient.IncGauge(MetricsAPI.GaugeFilesTotal, 1);
-            _metricsClient.IncGauge(MetricsAPI.GaugeFilesTotalSize, compressedSize);
+                _metricsClient.IncGauge(MetricsAPI.GaugeFilesTotal, 1);
+                _metricsClient.IncGauge(MetricsAPI.GaugeFilesTotalSize, compressedSize);
 
-            _scalewayStorage.QueueUpload(hash, path);
+                // Upload immédiat vers S3 — si ça échoue, le worker rattrapera
+                _ = _scalewayStorage.UploadAndConfirmAsync(hash, path, CancellationToken.None);
 
-            _fileUploadLocks.TryRemove(hash, out _);
+                _fileUploadLocks.TryRemove(hash, out _);
 
-            return Ok();
+                return Ok();
+            }
+            catch (Exception dbEx)
+            {
+                _logger.LogError(dbEx, "DB save failed for {hash}, cleaning up file", hash);
+                try { System.IO.File.Delete(path); } catch { }
+                throw;
+            }
         }
         catch (Exception e)
         {
@@ -364,5 +373,28 @@ public class ServerFilesController : ControllerBase
                 _fileUploadLocks.TryRemove(hash, out _);
             }
         }
+    }
+
+    [HttpPost(MareFiles.ServerFiles_ReportCdnMiss)]
+    public async Task<IActionResult> ReportCdnMiss([FromBody] List<string> hashes)
+    {
+        // Rate limiting par utilisateur : max 1 appel toutes les 30 secondes
+        var now = DateTime.UtcNow;
+        if (_cdnMissRateLimit.TryGetValue(MareUser, out var lastCall) && (now - lastCall).TotalSeconds < 30)
+            return Ok();
+        _cdnMissRateLimit[MareUser] = now;
+
+        var requested = (hashes ?? new List<string>())
+            .Where(h => !string.IsNullOrWhiteSpace(h) && h.Length == 40 && h.All(c => char.IsAsciiHexDigit(c)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(50)
+            .ToList();
+
+        if (requested.Count == 0) return Ok();
+
+        // Vérifier sur S3 avant d'invalider — on ne fait pas confiance au client aveuglément
+        _ = _scalewayStorage.VerifyAndInvalidateAsync(requested, CancellationToken.None);
+
+        return Ok();
     }
 }

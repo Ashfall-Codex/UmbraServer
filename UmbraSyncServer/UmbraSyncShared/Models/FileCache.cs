@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace MareSynchronosShared.Models;
 
@@ -15,4 +15,6 @@ public class FileCache
     [Timestamp]
     public byte[] Timestamp { get; set; }
     public long Size { get; set; }
+    public bool S3Confirmed { get; set; }
+    public DateTime? S3ConfirmedAt { get; set; }
 }

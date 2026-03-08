@@ -25,7 +25,7 @@ public class FileCleanupService : IHostedService
     private readonly bool _isMain = false;
     private readonly bool _isDistributionNode = false;
     private readonly bool _useColdStorage = false;
-    private HashSet<string> _orphanedFiles = new(StringComparer.Ordinal);
+    private HashSet<string> _orphanedFiles = new(StringComparer.OrdinalIgnoreCase);
 
     private CancellationTokenSource _cleanupCts;
 
@@ -160,7 +160,7 @@ public class FileCleanupService : IHostedService
                 file.Delete();
                 removedFiles.Add(file.Name);
             }
-            files.RemoveAll(f => removedFiles.Contains(f.Name, StringComparer.InvariantCultureIgnoreCase));
+            files.RemoveAll(f => removedFiles.Contains(f.Name, StringComparer.OrdinalIgnoreCase));
         }
         catch (Exception ex)
         {
@@ -173,11 +173,11 @@ public class FileCleanupService : IHostedService
     private void CleanUpOrphanedFiles(HashSet<string> allDbFileHashes, List<FileInfo> allPhysicalFiles, CancellationToken ct)
     {
         // To avoid race conditions with file uploads, only delete files on a second pass
-        var newOrphanedFiles = new HashSet<string>(StringComparer.Ordinal);
+        var newOrphanedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var file in allPhysicalFiles.ToList())
         {
-            if (!allDbFileHashes.Contains(file.Name.ToUpperInvariant()))
+            if (!allDbFileHashes.Contains(file.Name))
             {
                 _logger.LogInformation("File not in DB, marking: {fileName}", file.Name);
                 newOrphanedFiles.Add(file.FullName);
@@ -191,7 +191,7 @@ public class FileCleanupService : IHostedService
             var name = Path.GetFileName(fullName);
             File.Delete(fullName);
             _logger.LogInformation("File still not in DB, deleting: {fileName}", name);
-            allPhysicalFiles.RemoveAll(f => f.FullName.Equals(fullName, StringComparison.InvariantCultureIgnoreCase));
+            allPhysicalFiles.RemoveAll(f => f.FullName.Equals(fullName, StringComparison.OrdinalIgnoreCase));
         }
 
         _orphanedFiles = newOrphanedFiles;
@@ -228,7 +228,7 @@ public class FileCleanupService : IHostedService
 
                 ct.ThrowIfCancellationRequested();
             }
-            files.RemoveAll(f => removedFiles.Contains(f.Name, StringComparer.InvariantCultureIgnoreCase));
+            files.RemoveAll(f => removedFiles.Contains(f.Name, StringComparer.OrdinalIgnoreCase));
         }
         catch (Exception ex)
         {
@@ -261,7 +261,7 @@ public class FileCleanupService : IHostedService
                 if (_isMain)
                 {
                     var allDbFiles = await dbContext.Files.ToListAsync(ct).ConfigureAwait(false);
-                    allDbFileHashes = new HashSet<string>(allDbFiles.Select(a => a.Hash.ToUpperInvariant()), StringComparer.Ordinal);
+                    allDbFileHashes = new HashSet<string>(allDbFiles.Select(a => a.Hash), StringComparer.OrdinalIgnoreCase);
                 }
 
                 if (_useColdStorage)
@@ -313,27 +313,62 @@ public class FileCleanupService : IHostedService
 
                     if (!_useColdStorage)
                     {
-                        var filesToDeleteFromDb = removedHotFiles;
+                        var filesToDeleteFromDb = new List<string>();
 
                         if (_scaleway.IsEnabled)
                         {
                             try
                             {
                                 s3Hashes = await _scaleway.GetS3HashSetAsync(ct).ConfigureAwait(false);
-                                var onS3 = removedHotFiles.Where(h => s3Hashes.Contains(h)).ToList();
-                                filesToDeleteFromDb = removedHotFiles.Where(h => !s3Hashes.Contains(h)).ToList();
-                                if (onS3.Count > 0)
-                                    _logger.LogInformation("Cleanup: {Count} files preserved in DB (backed by S3)", onS3.Count);
+
+                                // Charger les hashes en attente de sync S3
+                                var pendingS3Hashes = new HashSet<string>(
+                                    await dbContext.Files
+                                        .Where(f => removedHotFiles.Contains(f.Hash) && f.Uploaded && !f.S3Confirmed)
+                                        .Select(f => f.Hash)
+                                        .ToListAsync(ct).ConfigureAwait(false),
+                                    StringComparer.OrdinalIgnoreCase);
+
+                                foreach (var h in removedHotFiles)
+                                {
+                                    if (s3Hashes.Contains(h))
+                                    {
+                                        // Sur S3 → garder en DB
+                                    }
+                                    else if (pendingS3Hashes.Contains(h))
+                                    {
+                                        // Pas encore sur S3 mais sync en attente → garder en DB
+                                        _logger.LogDebug("Cleanup: preserving {Hash} in DB (S3 sync pending)", h);
+                                    }
+                                    else
+                                    {
+                                        // Ni sur S3, ni en attente → supprimer de la DB
+                                        filesToDeleteFromDb.Add(h);
+                                    }
+                                }
+
+                                var preserved = removedHotFiles.Count - filesToDeleteFromDb.Count;
+                                if (preserved > 0)
+                                    _logger.LogInformation("Cleanup: {Count} files preserved in DB (backed by S3 or pending sync)", preserved);
                             }
                             catch (Exception ex) when (ex is not OperationCanceledException)
                             {
-                                _logger.LogWarning(ex, "Failed to list S3 objects, falling back to full DB cleanup for removed hot files");
+                                _logger.LogWarning(ex, "Failed to list S3 objects, skipping DB cleanup to prevent data loss");
+                                // Ne PAS supprimer de la DB si on ne peut pas vérifier S3
                             }
                         }
+                        else
+                        {
+                            // Pas de S3 → les fichiers locaux supprimés peuvent être supprimés de la DB
+                            filesToDeleteFromDb = removedHotFiles;
+                        }
 
-                        dbContext.Files.RemoveRange(
-                            dbContext.Files.Where(f => filesToDeleteFromDb.Contains(f.Hash))
-                        );
+                        if (filesToDeleteFromDb.Count > 0)
+                        {
+                            dbContext.Files.RemoveRange(
+                                dbContext.Files.Where(f => filesToDeleteFromDb.Contains(f.Hash))
+                            );
+                        }
                         allDbFileHashes.ExceptWith(filesToDeleteFromDb);
                     }
 
@@ -345,13 +380,21 @@ public class FileCleanupService : IHostedService
                         try
                         {
                             s3Hashes ??= await _scaleway.GetS3HashSetAsync(ct).ConfigureAwait(false);
-                            var s3Orphans = s3Hashes.Where(h => !allDbFileHashes.Contains(h.ToUpperInvariant())).ToList();
+                            var s3Orphans = s3Hashes.Where(h => !allDbFileHashes.Contains(h)).ToList();
 
                             if (s3Orphans.Count > 0)
                             {
                                 _logger.LogInformation("Cleanup: {Count} orphaned files found on S3, deleting...", s3Orphans.Count);
                                 var deleted = await _scaleway.DeleteS3ObjectsAsync(s3Orphans, ct).ConfigureAwait(false);
                                 _logger.LogInformation("Cleanup: deleted {Deleted} orphaned files from S3", deleted);
+
+                                // Invalider S3Confirmed pour les fichiers supprimés de S3 qui ont encore un enregistrement en DB
+                                await dbContext.Files
+                                    .Where(f => s3Orphans.Contains(f.Hash) && f.S3Confirmed)
+                                    .ExecuteUpdateAsync(s => s
+                                        .SetProperty(f => f.S3Confirmed, false)
+                                        .SetProperty(f => f.S3ConfirmedAt, (DateTime?)null), ct)
+                                    .ConfigureAwait(false);
                             }
                             else
                             {

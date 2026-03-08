@@ -1,8 +1,11 @@
 using Amazon.S3;
 using Amazon.S3.Model;
 using Amazon.S3.Transfer;
+using MareSynchronosShared.Data;
 using MareSynchronosShared.Services;
 using MareSynchronosShared.Utils.Configuration;
+using MareSynchronosStaticFilesServer.Utils;
+using Microsoft.EntityFrameworkCore;
 using System.Collections.Concurrent;
 
 namespace MareSynchronosStaticFilesServer.Services;
@@ -11,29 +14,30 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
 {
     private readonly IConfigurationService<StaticFilesServerConfiguration> _config;
     private readonly ILogger<ScalewayStorageService> _logger;
-    private readonly ConcurrentQueue<(string Hash, string FilePath)> _uploadQueue = new();
-    private readonly SemaphoreSlim _uploadSemaphore = new(10);
+    private readonly IServiceProvider _services;
     private readonly CancellationTokenSource _cts = new();
     private IAmazonS3? _s3Client;
-    private Task? _processingTask;
-    private Task? _periodicScanTask;
-    private Task? _verifyRecentTask;
+    private Task? _syncWorkerTask;
+    private Task? _integrityScanTask;
     private bool _disposed;
-    private readonly ConcurrentDictionary<string, byte> _pendingUploads = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, int> _retryCounts = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, (string FilePath, DateTime QueuedAt)> _recentUploads = new(StringComparer.OrdinalIgnoreCase);
-    private const int MaxRequeueRetries = 3;
+
+    // Garde contre les uploads simultanés du même hash (inline + worker)
+    private readonly ConcurrentDictionary<string, byte> _uploadsInFlight = new(StringComparer.OrdinalIgnoreCase);
 
     public bool IsEnabled => _config.GetValueOrDefault(nameof(StaticFilesServerConfiguration.ScalewayEnabled), false);
-    public bool IsPendingUpload(string hash)
-        => _pendingUploads.ContainsKey(hash) || _recentUploads.ContainsKey(hash);
+
+    private string CacheDirectory => _config.GetValueOrDefault(nameof(StaticFilesServerConfiguration.UseColdStorage), false)
+        ? _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ColdStorageDirectory))
+        : _config.GetValue<string>(nameof(StaticFilesServerConfiguration.CacheDirectory));
 
     public ScalewayStorageService(
         IConfigurationService<StaticFilesServerConfiguration> config,
-        ILogger<ScalewayStorageService> logger)
+        ILogger<ScalewayStorageService> logger,
+        IServiceProvider services)
     {
         _config = config;
         _logger = logger;
+        _services = services;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -45,10 +49,9 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
         }
 
         InitializeS3Client();
-        _processingTask = ProcessUploadQueueAsync(_cts.Token);
-        _periodicScanTask = PeriodicSyncScanAsync(_cts.Token);
-        _verifyRecentTask = VerifyRecentUploadsLoopAsync(_cts.Token);
-        _logger.LogInformation("Scaleway storage service started (sync scan at startup + every 5 minutes, recent uploads verification every 30s)");
+        _syncWorkerTask = SyncWorkerLoopAsync(_cts.Token);
+        _integrityScanTask = IntegrityScanLoopAsync(_cts.Token);
+        _logger.LogInformation("Scaleway storage service started (DB-driven sync worker + integrity scan)");
         return Task.CompletedTask;
     }
 
@@ -59,9 +62,8 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
         _cts.Cancel();
 
         var tasks = new List<Task>();
-        if (_processingTask != null) tasks.Add(_processingTask);
-        if (_periodicScanTask != null) tasks.Add(_periodicScanTask);
-        if (_verifyRecentTask != null) tasks.Add(_verifyRecentTask);
+        if (_syncWorkerTask != null) tasks.Add(_syncWorkerTask);
+        if (_integrityScanTask != null) tasks.Add(_integrityScanTask);
 
         try
         {
@@ -71,7 +73,7 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
         {
         }
 
-        _logger.LogInformation("Scaleway storage service stopped with {Count} items remaining in queue", _uploadQueue.Count);
+        _logger.LogInformation("Scaleway storage service stopped");
     }
 
     private void InitializeS3Client()
@@ -91,77 +93,24 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
         _s3Client = new AmazonS3Client(accessKey, secretKey, s3Config);
     }
 
-    public void QueueUpload(string hash, string filePath)
+    //  Sync Worker : poll DB for S3Confirmed=false, upload + confirm
+
+    private async Task SyncWorkerLoopAsync(CancellationToken ct)
     {
-        if (!IsEnabled || _s3Client == null) return;
+        // Laisser le serveur démarrer
+        try { await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return; }
 
-        _uploadQueue.Enqueue((hash, filePath));
-        _pendingUploads.TryAdd(hash, 0);
-        _recentUploads[hash] = (filePath, DateTime.UtcNow);
-        _logger.LogInformation("Queued file {Hash} for S3 upload, queue size: {Size}", hash, _uploadQueue.Count);
-    }
-
-    public async Task<bool> FileExistsAsync(string hash, long expectedSize, CancellationToken ct = default)
-    {
-        if (!IsEnabled || _s3Client == null) return false;
-
-        var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
-        var key = GetS3Key(hash);
-
-        try
-        {
-            var metadata = await _s3Client.GetObjectMetadataAsync(bucketName, key, ct).ConfigureAwait(false);
-            if (metadata.ContentLength != expectedSize)
-            {
-                _logger.LogWarning("S3 size mismatch for {Hash}: expected {Expected} bytes, got {Actual} bytes on S3",
-                    hash, expectedSize, metadata.ContentLength);
-                return false;
-            }
-            return true;
-        }
-        catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
-        {
-            return false;
-        }
-        catch (AmazonS3Exception ex)
-        {
-            _logger.LogWarning(ex, "S3 HEAD request failed for {Hash} (HTTP {StatusCode}), assuming file does not exist", hash, ex.StatusCode);
-            return false;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "S3 HEAD request error for {Hash}, assuming file does not exist", hash);
-            return false;
-        }
-    }
-
-    // --- Traitement de la queue d'upload ---
-
-    private async Task ProcessUploadQueueAsync(CancellationToken ct)
-    {
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                if (_uploadQueue.TryDequeue(out var item))
+                var processed = await SyncBatchAsync(ct).ConfigureAwait(false);
+
+                // Si on a traité des fichiers, enchaîner immédiatement ; sinon attendre
+                if (processed == 0)
                 {
-                    await _uploadSemaphore.WaitAsync(ct).ConfigureAwait(false);
-                    var capturedItem = item;
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await UploadFileWithCheckAsync(capturedItem.Hash, capturedItem.FilePath, ct).ConfigureAwait(false);
-                        }
-                        finally
-                        {
-                            _uploadSemaphore.Release();
-                        }
-                    }, ct);
-                }
-                else
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -170,95 +119,153 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in upload queue processing");
-                await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
-            }
-        }
-    }
-    
-    private async Task UploadFileWithCheckAsync(string hash, string filePath, CancellationToken ct)
-    {
-        try
-        {
-            if (_s3Client == null) return;
-
-            if (!File.Exists(filePath))
-            {
-                _logger.LogWarning("File {FilePath} no longer exists, skipping upload", filePath);
-                _pendingUploads.TryRemove(hash, out _);
-                _retryCounts.TryRemove(hash, out _);
-                _recentUploads.TryRemove(hash, out _);
-                return;
-            }
-
-            var localSize = new FileInfo(filePath).Length;
-            if (await FileExistsAsync(hash, localSize, ct).ConfigureAwait(false))
-            {
-                _logger.LogDebug("File {Hash} already exists on S3 with correct size, skipping upload", hash);
-                _pendingUploads.TryRemove(hash, out _);
-                _retryCounts.TryRemove(hash, out _);
-                _recentUploads.TryRemove(hash, out _);
-                return;
-            }
-
-            await UploadFileAsync(hash, filePath, ct).ConfigureAwait(false);
-            _pendingUploads.TryRemove(hash, out _);
-            _retryCounts.TryRemove(hash, out _);
-            _recentUploads.TryRemove(hash, out _);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            var retryCount = _retryCounts.AddOrUpdate(hash, 1, (_, count) => count + 1);
-
-            if (retryCount <= MaxRequeueRetries)
-            {
-                _logger.LogWarning(ex, "S3 upload failed for {Hash} (attempt {Attempt}/{Max}), re-queuing in 10s",
-                    hash, retryCount, MaxRequeueRetries);
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await Task.Delay(TimeSpan.FromSeconds(10 * retryCount), ct).ConfigureAwait(false);
-                        _uploadQueue.Enqueue((hash, filePath));
-                    }
-                    catch (OperationCanceledException) { }
-                }, CancellationToken.None);
-            }
-            else
-            {
-                _logger.LogError(ex, "S3 upload permanently failed for {Hash} after {Max} re-queues, giving up (verification loop will retry later)",
-                    hash, MaxRequeueRetries);
-                _pendingUploads.TryRemove(hash, out _);
-                _retryCounts.TryRemove(hash, out _);
+                _logger.LogError(ex, "Error in S3 sync worker");
+                try { await Task.Delay(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
             }
         }
     }
 
-    private async Task UploadFileAsync(string hash, string filePath, CancellationToken ct)
+    private async Task<int> SyncBatchAsync(CancellationToken ct)
     {
-        if (_s3Client == null) return;
+        if (_s3Client == null) return 0;
+
+        using var scope = _services.CreateScope();
+        using var db = scope.ServiceProvider.GetRequiredService<MareDbContext>();
+
+        var unsyncedFiles = await db.Files
+            .Where(f => f.Uploaded && !f.S3Confirmed)
+            .OrderBy(f => f.UploadDate)
+            .Take(50)
+            .Select(f => new { f.Hash, f.Size })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        if (unsyncedFiles.Count == 0) return 0;
+
+        _logger.LogInformation("S3 sync: {Count} files to sync", unsyncedFiles.Count);
 
         var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
-        var key = GetS3Key(hash);
+        var cacheDir = CacheDirectory;
+        int synced = 0;
+        int failed = 0;
 
-        const int maxRetries = 5;
+        // Paralléliser avec un sémaphore pour limiter les uploads concurrents
+        var semaphore = new SemaphoreSlim(10);
+        var tasks = unsyncedFiles.Select(async file =>
+        {
+            await semaphore.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                // Skip si déjà en cours d'upload inline
+                if (!_uploadsInFlight.TryAdd(file.Hash, 0))
+                {
+                    Interlocked.Increment(ref synced); // Compté comme traité
+                    return;
+                }
+
+                var filePath = FilePathUtil.GetFilePath(cacheDir, file.Hash);
+                if (!File.Exists(filePath))
+                {
+                    _logger.LogWarning("S3 sync: file {Hash} not found on disk, skipping", file.Hash);
+                    Interlocked.Increment(ref failed);
+                    return;
+                }
+
+                var localSize = new FileInfo(filePath).Length;
+                var key = GetS3Key(file.Hash);
+
+                // Vérifier si déjà présent avec la bonne taille
+                bool alreadyOnS3 = false;
+                try
+                {
+                    var metadata = await _s3Client.GetObjectMetadataAsync(bucketName, key, ct).ConfigureAwait(false);
+                    alreadyOnS3 = metadata.ContentLength == localSize;
+                    if (!alreadyOnS3)
+                    {
+                        _logger.LogWarning("S3 sync: size mismatch for {Hash} (local={Local}, S3={S3}), re-uploading",
+                            file.Hash, localSize, metadata.ContentLength);
+                    }
+                }
+                catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    // Pas sur S3, on upload
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "S3 sync: HEAD check failed for {Hash}", file.Hash);
+                }
+
+                if (!alreadyOnS3)
+                {
+                    await UploadToS3Async(file.Hash, filePath, bucketName, ct).ConfigureAwait(false);
+                }
+
+                // Confirmer en DB
+                await ConfirmS3Async(file.Hash, ct).ConfigureAwait(false);
+                Interlocked.Increment(ref synced);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "S3 sync: failed for {Hash}", file.Hash);
+                Interlocked.Increment(ref failed);
+            }
+            finally
+            {
+                _uploadsInFlight.TryRemove(file.Hash, out _);
+                semaphore.Release();
+            }
+        });
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        if (synced > 0 || failed > 0)
+        {
+            _logger.LogInformation("S3 sync batch: {Synced} confirmed, {Failed} failed", synced, failed);
+        }
+
+        return unsyncedFiles.Count;
+    }
+
+
+    // Upload immédiat vers S3 + confirmation en DB.Retourne true si le fichier est confirmé sur S3, false sinon (le worker rattrapera).
+    public async Task<bool> UploadAndConfirmAsync(string hash, string filePath, CancellationToken ct)
+    {
+        if (!IsEnabled || _s3Client == null) return false;
+        if (!_uploadsInFlight.TryAdd(hash, 0)) return false; // Déjà en cours
+
+        var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
+        try
+        {
+            await UploadToS3Async(hash, filePath, bucketName, ct).ConfigureAwait(false);
+            await ConfirmS3Async(hash, ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Inline S3 upload failed for {Hash}, worker will retry", hash);
+            return false;
+        }
+        finally
+        {
+            _uploadsInFlight.TryRemove(hash, out _);
+        }
+    }
+
+    private async Task UploadToS3Async(string hash, string filePath, string bucketName, CancellationToken ct)
+    {
+        var key = GetS3Key(hash);
+        const int maxRetries = 3;
 
         for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
             try
             {
                 if (!File.Exists(filePath))
-                {
-                    _logger.LogWarning("File {FilePath} no longer exists, skipping upload", filePath);
-                    return;
-                }
+                    throw new FileNotFoundException($"File {filePath} not found");
 
                 var fileSize = new FileInfo(filePath).Length;
-                _logger.LogInformation("S3 upload starting: {Hash} ({Size} bytes, attempt {Attempt}/{MaxRetries})",
+                _logger.LogDebug("S3 upload: {Hash} ({Size} bytes, attempt {A}/{Max})",
                     hash, fileSize, attempt, maxRetries);
 
                 using var transferUtility = new TransferUtility(_s3Client);
@@ -274,64 +281,55 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
 
                 await transferUtility.UploadAsync(uploadRequest, ct).ConfigureAwait(false);
 
-                // Vérification post-upload : HEAD request pour confirmer la persistance sur Scaleway
-                try
+                // Vérification post-upload
+                var metadata = await _s3Client.GetObjectMetadataAsync(bucketName, key, ct).ConfigureAwait(false);
+                if (metadata.ContentLength != fileSize)
                 {
-                    var metadata = await _s3Client.GetObjectMetadataAsync(bucketName, key, ct).ConfigureAwait(false);
-                    _logger.LogInformation("S3 upload success: {Hash} ({Size} bytes)", hash, fileSize);
-                    try { File.SetLastWriteTimeUtc(filePath, metadata.LastModified.ToUniversalTime()); }
-                    catch { /* fichier peut avoir été supprimé entre-temps */ }
-                    return;
-                }
-                catch (AmazonS3Exception verifyEx) when (verifyEx.StatusCode == System.Net.HttpStatusCode.NotFound)
-                {
-                    _logger.LogWarning("S3 upload for {Hash} returned success but HEAD verification failed (not found), attempt {Attempt}/{MaxRetries}",
-                        hash, attempt, maxRetries);
-                }
-                catch (Exception verifyEx) when (verifyEx is not OperationCanceledException)
-                {
-                    _logger.LogWarning(verifyEx, "S3 upload for {Hash} returned success but HEAD verification errored, attempt {Attempt}/{MaxRetries}",
-                        hash, attempt, maxRetries);
+                    throw new InvalidOperationException(
+                        $"S3 upload size mismatch for {hash}: uploaded {fileSize}, S3 reports {metadata.ContentLength}");
                 }
 
-                if (attempt < maxRetries)
-                {
-                    var verifyDelay = TimeSpan.FromSeconds(3 * attempt);
-                    await Task.Delay(verifyDelay, ct).ConfigureAwait(false);
-                }
-                else
-                {
-                    throw new InvalidOperationException($"S3 upload for {hash} succeeded but HEAD verification failed after {maxRetries} attempts");
-                }
+                _logger.LogInformation("S3 upload success: {Hash} ({Size} bytes)", hash, fileSize);
+                return;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                if (attempt < maxRetries)
-                {
-                    var delay = TimeSpan.FromSeconds(5 * attempt);
-                    _logger.LogWarning(ex, "S3 upload failed: {Hash} (attempt {Attempt}/{MaxRetries}), retrying in {Delay}s",
-                        hash, attempt, maxRetries, delay.TotalSeconds);
-                    await Task.Delay(delay, ct).ConfigureAwait(false);
-                }
-                else
-                {
-                    throw;
-                }
+                if (attempt >= maxRetries) throw;
+
+                var delay = TimeSpan.FromSeconds(3 * attempt);
+                _logger.LogWarning(ex, "S3 upload failed: {Hash} (attempt {A}/{Max}), retrying in {D}s",
+                    hash, attempt, maxRetries, delay.TotalSeconds);
+                await Task.Delay(delay, ct).ConfigureAwait(false);
             }
         }
     }
 
-
-    private async Task VerifyRecentUploadsLoopAsync(CancellationToken ct)
+    private async Task ConfirmS3Async(string hash, CancellationToken ct)
     {
-        try { await Task.Delay(TimeSpan.FromSeconds(15), ct).ConfigureAwait(false); }
+        using var scope = _services.CreateScope();
+        using var db = scope.ServiceProvider.GetRequiredService<MareDbContext>();
+
+        await db.Files
+            .Where(f => f.Hash == hash)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(f => f.S3Confirmed, true)
+                .SetProperty(f => f.S3ConfirmedAt, DateTime.UtcNow), ct)
+            .ConfigureAwait(false);
+    }
+
+    //  Scan D'intégrité : re-verify old confirmed files
+
+    private async Task IntegrityScanLoopAsync(CancellationToken ct)
+    {
+        // Premier scan après 2 minutes
+        try { await Task.Delay(TimeSpan.FromMinutes(2), ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return; }
 
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                await VerifyRecentUploadsAsync(ct).ConfigureAwait(false);
+                await RunIntegrityScanAsync(ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -339,314 +337,167 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error during recent uploads verification");
+                _logger.LogError(ex, "Error during S3 integrity scan");
             }
 
-            try { await Task.Delay(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false); }
+            try { await Task.Delay(TimeSpan.FromMinutes(30), ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
         }
     }
 
-    private async Task VerifyRecentUploadsAsync(CancellationToken ct)
+    private async Task RunIntegrityScanAsync(CancellationToken ct)
     {
-        if (_s3Client == null || _recentUploads.IsEmpty) return;
+        if (_s3Client == null) return;
 
-        var now = DateTime.UtcNow;
+        using var scope = _services.CreateScope();
+        using var db = scope.ServiceProvider.GetRequiredService<MareDbContext>();
+
+        var cutoff = DateTime.UtcNow - TimeSpan.FromHours(24);
+
+        // Vérifier un batch de fichiers confirmés il y a >24h
+        var filesToCheck = await db.Files
+            .Where(f => f.S3Confirmed && f.S3ConfirmedAt != null && f.S3ConfirmedAt < cutoff)
+            .OrderBy(f => f.S3ConfirmedAt)
+            .Take(100)
+            .Select(f => new { f.Hash, f.Size })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        if (filesToCheck.Count == 0) return;
+
+        var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
         int verified = 0;
-        int requeued = 0;
-        int expired = 0;
+        int invalidated = 0;
 
-        foreach (var kvp in _recentUploads)
+        foreach (var file in filesToCheck)
         {
             ct.ThrowIfCancellationRequested();
 
-            var hash = kvp.Key;
-            var (filePath, queuedAt) = kvp.Value;
-            var age = now - queuedAt;
-
-            // Laisser le temps au pipeline d'upload de finir
-            if (age < TimeSpan.FromSeconds(20))
-                continue;
-
-            // Trop vieux : le scan périodique prendra le relais
-            if (age > TimeSpan.FromMinutes(10))
-            {
-                _recentUploads.TryRemove(hash, out _);
-                expired++;
-                continue;
-            }
-
-            // Encore dans le pipeline d'upload, ne pas interférer
-            if (_pendingUploads.ContainsKey(hash))
-                continue;
-
-            // Vérifier si le fichier existe toujours sur disque
-            if (!File.Exists(filePath))
-            {
-                _recentUploads.TryRemove(hash, out _);
-                continue;
-            }
-
-            var localSize = new FileInfo(filePath).Length;
             try
             {
-                if (await FileExistsAsync(hash, localSize, ct).ConfigureAwait(false))
+                var key = GetS3Key(file.Hash);
+                var metadata = await _s3Client.GetObjectMetadataAsync(bucketName, key, ct).ConfigureAwait(false);
+
+                if (metadata.ContentLength == file.Size)
                 {
-                    _recentUploads.TryRemove(hash, out _);
+                    // Toujours valide — rafraîchir le timestamp de confirmation
+                    await db.Files
+                        .Where(f => f.Hash == file.Hash)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(f => f.S3ConfirmedAt, DateTime.UtcNow), ct)
+                        .ConfigureAwait(false);
                     verified++;
                 }
                 else
                 {
-                    _logger.LogWarning("Verify: file {Hash} not found on S3 ({Age}s after queue), re-queuing",
-                        hash, (int)age.TotalSeconds);
-                    _retryCounts.TryRemove(hash, out _);
-                    QueueUpload(hash, filePath);
-                    requeued++;
+                    _logger.LogWarning("Integrity scan: size mismatch for {Hash} (DB={DbSize}, S3={S3Size}), invalidating",
+                        file.Hash, file.Size, metadata.ContentLength);
+                    await InvalidateS3ConfirmationAsync(db, file.Hash, ct).ConfigureAwait(false);
+                    invalidated++;
                 }
+            }
+            catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                _logger.LogWarning("Integrity scan: {Hash} not found on S3, invalidating", file.Hash);
+                await InvalidateS3ConfirmationAsync(db, file.Hash, ct).ConfigureAwait(false);
+                invalidated++;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Verify: HEAD check failed for {Hash}", hash);
+                _logger.LogWarning(ex, "Integrity scan: HEAD check failed for {Hash}", file.Hash);
             }
         }
 
-        if (verified > 0 || requeued > 0)
-        {
-            _logger.LogInformation("Verify recent uploads: {Verified} confirmed on S3, {Requeued} re-queued, {Expired} expired, {Remaining} still tracking",
-                verified, requeued, expired, _recentUploads.Count);
-        }
+        _logger.LogInformation("Integrity scan: {Checked} checked, {Verified} OK, {Invalidated} invalidated",
+            filesToCheck.Count, verified, invalidated);
     }
 
-    //Scan périodique de rattrapage
-
-    private async Task PeriodicSyncScanAsync(CancellationToken ct)
+    private static async Task InvalidateS3ConfirmationAsync(MareDbContext db, string hash, CancellationToken ct)
     {
-        // Scan immédiat au démarrage (attendre 5s pour l'init du serveur)
-        try { await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
-        catch (OperationCanceledException) { return; }
-
-        while (!ct.IsCancellationRequested)
-        {
-            try
-            {
-                await RunSyncScanAsync(ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error during periodic S3 sync scan");
-            }
-
-            // Scan toutes les 5 minutes
-            try { await Task.Delay(TimeSpan.FromMinutes(5), ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { break; }
-        }
+        await db.Files
+            .Where(f => f.Hash == hash)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(f => f.S3Confirmed, false)
+                .SetProperty(f => f.S3ConfirmedAt, (DateTime?)null), ct)
+            .ConfigureAwait(false);
     }
 
-    private async Task RunSyncScanAsync(CancellationToken ct)
-    {
-        if (_s3Client == null) return;
+    // ──────────────────────────────────────────────────────────────────────
+    //  CDN Miss : vérification S3 + invalidation si absent
+    // ──────────────────────────────────────────────────────────────────────
 
-        var cacheDir = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.CacheDirectory));
-        if (string.IsNullOrEmpty(cacheDir) || !Directory.Exists(cacheDir))
-        {
-            _logger.LogWarning("Cache directory {Dir} does not exist, skipping sync scan", cacheDir);
-            return;
-        }
+    /// <summary>
+    /// Vérifie sur S3 que les hashes existent réellement.
+    /// Si un hash est absent (404) ou a une taille incohérente, on invalide S3Confirmed en DB.
+    /// Appelé depuis ReportCdnMiss (fire-and-forget).
+    /// </summary>
+    public async Task VerifyAndInvalidateAsync(List<string> hashes, CancellationToken ct)
+    {
+        if (!IsEnabled || _s3Client == null || hashes.Count == 0) return;
 
         var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
 
-        _logger.LogInformation("Starting periodic S3 sync scan of {Dir}", cacheDir);
+        using var scope = _services.CreateScope();
+        using var db = scope.ServiceProvider.GetRequiredService<MareDbContext>();
 
-        // Récupérer tous les objets présents sur S3 avec leurs tailles
-        var s3Objects = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-        bool listingSucceeded = false;
-        try
-        {
-            string? continuationToken = null;
-            do
-            {
-                var listRequest = new ListObjectsV2Request
-                {
-                    BucketName = bucketName,
-                    MaxKeys = 1000,
-                    ContinuationToken = continuationToken
-                };
+        // Charger les tailles attendues depuis la DB
+        var dbFiles = await db.Files
+            .Where(f => hashes.Contains(f.Hash) && f.S3Confirmed)
+            .Select(f => new { f.Hash, f.Size })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
 
-                var response = await _s3Client.ListObjectsV2Async(listRequest, ct).ConfigureAwait(false);
-                foreach (var obj in response.S3Objects)
-                {
-                    var slashIdx = obj.Key.IndexOf('/');
-                    var hash = slashIdx >= 0 ? obj.Key[(slashIdx + 1)..] : obj.Key;
-                    s3Objects[hash] = obj.Size;
-                }
+        if (dbFiles.Count == 0) return;
 
-                continuationToken = response.IsTruncated ? response.NextContinuationToken : null;
-            } while (continuationToken != null);
+        int invalidated = 0;
 
-            listingSucceeded = true;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to list S3 objects during sync scan, falling back to individual HEAD checks");
-        }
-
-        if (listingSucceeded)
-        {
-            _logger.LogInformation("S3 sync scan: {S3Count} objects found on S3", s3Objects.Count);
-        }
-
-        int totalScanned = 0;
-        int missing = 0;
-        int sizeMismatch = 0;
-        int inSync = 0;
-        int skippedTemp = 0;
-        int skippedPending = 0;
-        int headChecked = 0;
-        const int maxHeadChecksOnFallback = 50;
-
-        foreach (var subDir in Directory.EnumerateDirectories(cacheDir))
+        foreach (var file in dbFiles)
         {
             ct.ThrowIfCancellationRequested();
-
-            foreach (var filePath in Directory.EnumerateFiles(subDir))
-            {
-                ct.ThrowIfCancellationRequested();
-
-                var hash = Path.GetFileName(filePath);
-
-                if (hash.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
-                    || hash.EndsWith(".dl", StringComparison.OrdinalIgnoreCase))
-                {
-                    skippedTemp++;
-                    continue;
-                }
-
-                totalScanned++;
-
-                if (_pendingUploads.ContainsKey(hash))
-                {
-                    skippedPending++;
-                    continue;
-                }
-
-                if (listingSucceeded)
-                {
-                    if (!s3Objects.TryGetValue(hash, out var s3Size))
-                    {
-                        missing++;
-                        _retryCounts.TryRemove(hash, out _);
-                        QueueUpload(hash, filePath);
-                        continue;
-                    }
-
-                    var localSize = new FileInfo(filePath).Length;
-                    if (s3Size != localSize)
-                    {
-                        sizeMismatch++;
-                        _logger.LogWarning("S3 sync scan: size mismatch for {Hash} (local: {LocalSize} bytes, S3: {S3Size} bytes), re-queuing",
-                            hash, localSize, s3Size);
-                        _retryCounts.TryRemove(hash, out _);
-                        QueueUpload(hash, filePath);
-                        continue;
-                    }
-
-                    _retryCounts.TryRemove(hash, out _);
-                    _recentUploads.TryRemove(hash, out _);
-                    inSync++;
-                }
-                else
-                {
-                    if (headChecked >= maxHeadChecksOnFallback)
-                        continue;
-
-                    var localSize = new FileInfo(filePath).Length;
-                    try
-                    {
-                        headChecked++;
-                        if (!await FileExistsAsync(hash, localSize, ct).ConfigureAwait(false))
-                        {
-                            missing++;
-                            _retryCounts.TryRemove(hash, out _);
-                            QueueUpload(hash, filePath);
-                        }
-                        else
-                        {
-                            _retryCounts.TryRemove(hash, out _);
-                            _recentUploads.TryRemove(hash, out _);
-                            inSync++;
-                        }
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        _logger.LogWarning(ex, "HEAD check failed for {Hash} during fallback scan", hash);
-                    }
-                }
-            }
-        }
-
-        var queued = missing + sizeMismatch;
-        if (!listingSucceeded)
-        {
-            _logger.LogInformation(
-                "S3 sync scan complete (fallback HEAD mode): {Total} files scanned, {InSync} in sync, {Missing} missing, {HeadChecked}/{MaxHead} HEAD checks used, {SkippedTemp} temp skipped, {SkippedPending} pending skipped, {Queued} queued for upload",
-                totalScanned, inSync, missing, headChecked, maxHeadChecksOnFallback, skippedTemp, skippedPending, queued);
-        }
-        else
-        {
-            _logger.LogInformation(
-                "S3 sync scan complete: {Total} files scanned, {InSync} in sync, {Missing} missing, {SizeMismatch} size mismatch, {SkippedTemp} temp skipped, {SkippedPending} pending skipped, {Queued} queued for upload",
-                totalScanned, inSync, missing, sizeMismatch, skippedTemp, skippedPending, queued);
-        }
-    }
-
-    public async Task<int> DeleteS3ObjectsAsync(IEnumerable<string> hashes, CancellationToken ct)
-    {
-        if (_s3Client == null) return 0;
-
-        var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
-        var deleted = 0;
-
-        foreach (var batch in hashes.Chunk(1000))
-        {
-            ct.ThrowIfCancellationRequested();
-
-            var request = new DeleteObjectsRequest
-            {
-                BucketName = bucketName,
-                Objects = batch.Select(h => new KeyVersion { Key = GetS3Key(h) }).ToList()
-            };
 
             try
             {
-                var response = await _s3Client.DeleteObjectsAsync(request, ct).ConfigureAwait(false);
-                deleted += response.DeletedObjects.Count;
+                var key = GetS3Key(file.Hash);
+                var metadata = await _s3Client.GetObjectMetadataAsync(bucketName, key, ct).ConfigureAwait(false);
 
-                foreach (var error in response.DeleteErrors)
+                if (metadata.ContentLength != file.Size)
                 {
-                    _logger.LogWarning("S3 delete error for key {Key}: {Code} - {Message}", error.Key, error.Code, error.Message);
+                    _logger.LogWarning("CDN miss verify: size mismatch for {Hash} (DB={DbSize}, S3={S3Size}), invalidating",
+                        file.Hash, file.Size, metadata.ContentLength);
+                    await InvalidateS3ConfirmationAsync(db, file.Hash, ct).ConfigureAwait(false);
+                    invalidated++;
                 }
+            }
+            catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                _logger.LogWarning("CDN miss verify: {Hash} not found on S3, invalidating", file.Hash);
+                await InvalidateS3ConfirmationAsync(db, file.Hash, ct).ConfigureAwait(false);
+                invalidated++;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogError(ex, "S3 batch delete failed for {Count} objects", batch.Length);
+                _logger.LogWarning(ex, "CDN miss verify: HEAD check failed for {Hash}", file.Hash);
             }
         }
 
-        return deleted;
+        if (invalidated > 0)
+        {
+            _logger.LogInformation("CDN miss report: {Invalidated}/{Total} hashes invalidated", invalidated, dbFiles.Count);
+        }
     }
+
+    // ──────────────────────────────────────────────────────────────────────
+    //  Méthodes publiques pour FileCleanupService
+    // ──────────────────────────────────────────────────────────────────────
 
     public async Task<HashSet<string>> GetS3HashSetAsync(CancellationToken ct)
     {
-        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (_s3Client == null) return result;
+        if (_s3Client == null) return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
-        string? continuationToken = null;
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        string? continuationToken = null;
         do
         {
             var listRequest = new ListObjectsV2Request
@@ -670,6 +521,43 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
         return result;
     }
 
+    public async Task<int> DeleteS3ObjectsAsync(IEnumerable<string> hashes, CancellationToken ct)
+    {
+        if (_s3Client == null) return 0;
+
+        var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
+        var deleted = 0;
+
+        foreach (var batch in hashes.Chunk(1000))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                var deleteRequest = new DeleteObjectsRequest
+                {
+                    BucketName = bucketName,
+                    Objects = batch.Select(h => new KeyVersion { Key = GetS3Key(h) }).ToList()
+                };
+
+                var response = await _s3Client.DeleteObjectsAsync(deleteRequest, ct).ConfigureAwait(false);
+                deleted += response.DeletedObjects.Count;
+
+                if (response.DeleteErrors.Count > 0)
+                {
+                    foreach (var err in response.DeleteErrors)
+                        _logger.LogWarning("S3 delete error: {Key} — {Code} {Message}", err.Key, err.Code, err.Message);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "S3 batch delete failed for {Count} objects", batch.Length);
+            }
+        }
+
+        return deleted;
+    }
+
     private static string GetS3Key(string hash)
     {
         return $"{hash[0]}/{hash}";
@@ -679,10 +567,8 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-
         _cts.Cancel();
         _cts.Dispose();
-        _uploadSemaphore.Dispose();
         _s3Client?.Dispose();
     }
 }
