@@ -1,4 +1,5 @@
-﻿using System.Reflection;
+﻿using MareSynchronosShared.Utils;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 
@@ -7,6 +8,7 @@ namespace MareSynchronosShared.Utils.Configuration;
 public class MareConfigurationBase : IMareConfiguration
 {
     public int DbContextPoolSize { get; set; } = 100;
+    [SensitiveConfiguration]
     public string Jwt { get; set; } = string.Empty;
     public Uri MainServerAddress { get; set; }
     public int RedisPool { get; set; } = 50;

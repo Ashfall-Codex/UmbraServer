@@ -39,7 +39,9 @@ public class StaticFilesServerConfiguration : MareConfigurationBase
     public string SSIContentType { get; set; } = "application/x-block-file-list";
 
     public bool ScalewayEnabled { get; set; } = false;
+    [SensitiveConfiguration]
     public string ScalewayAccessKey { get; set; } = string.Empty;
+    [SensitiveConfiguration]
     public string ScalewaySecretKey { get; set; } = string.Empty;
     public string ScalewayBucketName { get; set; } = string.Empty;
     public string ScalewayRegion { get; set; } = string.Empty;

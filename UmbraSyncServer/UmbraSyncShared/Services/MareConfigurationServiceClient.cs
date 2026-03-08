@@ -86,15 +86,25 @@ public class MareConfigurationServiceClient<T> : IHostedService, IConfigurationS
         foreach (var prop in props)
         {
             var isRemote = prop.GetCustomAttributes(typeof(RemoteConfigurationAttribute), true).Any();
-            var getValueMethod = GetType().GetMethod(nameof(GetValue)).MakeGenericMethod(prop.PropertyType);
-            var value = isRemote ? getValueMethod.Invoke(this, new[] { prop.Name }) : prop.GetValue(_config.CurrentValue);
-            if (typeof(IEnumerable).IsAssignableFrom(prop.PropertyType) && !typeof(string).IsAssignableFrom(prop.PropertyType))
+            var isSensitive = prop.GetCustomAttributes(typeof(SensitiveConfigurationAttribute), true).Any();
+
+            object value;
+            if (isSensitive)
             {
-                var enumVal = (IEnumerable)value;
-                value = string.Empty;
-                foreach (var listVal in enumVal)
+                value = "***";
+            }
+            else
+            {
+                var getValueMethod = GetType().GetMethod(nameof(GetValue)).MakeGenericMethod(prop.PropertyType);
+                value = isRemote ? getValueMethod.Invoke(this, new[] { prop.Name }) : prop.GetValue(_config.CurrentValue);
+                if (typeof(IEnumerable).IsAssignableFrom(prop.PropertyType) && !typeof(string).IsAssignableFrom(prop.PropertyType))
                 {
-                    value += listVal.ToString() + ", ";
+                    var enumVal = (IEnumerable)value;
+                    value = string.Empty;
+                    foreach (var listVal in enumVal)
+                    {
+                        value += listVal.ToString() + ", ";
+                    }
                 }
             }
             sb.AppendLine($"{prop.Name} (IsRemote: {isRemote}) => {value}");
@@ -161,8 +171,8 @@ public class MareConfigurationServiceClient<T> : IHostedService, IConfigurationS
                     _initialized = true;
                 }
 
-                _logger.LogInformation("Saved properties from HTTP are now:");
-                _logger.LogInformation(ToString());
+                _logger.LogDebug("Saved properties from HTTP are now:");
+                _logger.LogDebug(ToString());
             }
             catch (Exception ex)
             {
