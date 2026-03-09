@@ -11,64 +11,33 @@ namespace MareSynchronosServer.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            // S3 columns — IF NOT EXISTS car possiblement déjà ajoutées manuellement en prod
             migrationBuilder.Sql("""
+                -- S3 columns
                 ALTER TABLE file_caches ADD COLUMN IF NOT EXISTS s3confirmed boolean NOT NULL DEFAULT false;
                 ALTER TABLE file_caches ADD COLUMN IF NOT EXISTS s3confirmed_at timestamp with time zone;
                 CREATE INDEX IF NOT EXISTS ix_file_caches_s3confirmed ON file_caches (s3confirmed);
+
+                -- moodles_data
+                ALTER TABLE character_rp_profiles ADD COLUMN IF NOT EXISTS moodles_data text;
+
+                -- housing_share_allowed_groups
+                CREATE TABLE IF NOT EXISTS housing_share_allowed_groups (
+                    share_id uuid NOT NULL,
+                    allowed_group_gid character varying(20) NOT NULL,
+                    CONSTRAINT pk_housing_share_allowed_groups PRIMARY KEY (share_id, allowed_group_gid),
+                    CONSTRAINT fk_housing_share_allowed_groups_housing_shares_share_id FOREIGN KEY (share_id) REFERENCES housing_shares (id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS ix_housing_share_allowed_groups_allowed_group_gid ON housing_share_allowed_groups (allowed_group_gid);
+
+                -- housing_share_allowed_users
+                CREATE TABLE IF NOT EXISTS housing_share_allowed_users (
+                    share_id uuid NOT NULL,
+                    allowed_individual_uid character varying(10) NOT NULL,
+                    CONSTRAINT pk_housing_share_allowed_users PRIMARY KEY (share_id, allowed_individual_uid),
+                    CONSTRAINT fk_housing_share_allowed_users_housing_shares_share_id FOREIGN KEY (share_id) REFERENCES housing_shares (id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS ix_housing_share_allowed_users_allowed_individual_uid ON housing_share_allowed_users (allowed_individual_uid);
                 """);
-
-            migrationBuilder.AddColumn<string>(
-                name: "moodles_data",
-                table: "character_rp_profiles",
-                type: "text",
-                nullable: true);
-
-            migrationBuilder.CreateTable(
-                name: "housing_share_allowed_groups",
-                columns: table => new
-                {
-                    share_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    allowed_group_gid = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("pk_housing_share_allowed_groups", x => new { x.share_id, x.allowed_group_gid });
-                    table.ForeignKey(
-                        name: "fk_housing_share_allowed_groups_housing_shares_share_id",
-                        column: x => x.share_id,
-                        principalTable: "housing_shares",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "housing_share_allowed_users",
-                columns: table => new
-                {
-                    share_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    allowed_individual_uid = table.Column<string>(type: "character varying(10)", maxLength: 10, nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("pk_housing_share_allowed_users", x => new { x.share_id, x.allowed_individual_uid });
-                    table.ForeignKey(
-                        name: "fk_housing_share_allowed_users_housing_shares_share_id",
-                        column: x => x.share_id,
-                        principalTable: "housing_shares",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
-                });
-
-            migrationBuilder.CreateIndex(
-                name: "ix_housing_share_allowed_groups_allowed_group_gid",
-                table: "housing_share_allowed_groups",
-                column: "allowed_group_gid");
-
-            migrationBuilder.CreateIndex(
-                name: "ix_housing_share_allowed_users_allowed_individual_uid",
-                table: "housing_share_allowed_users",
-                column: "allowed_individual_uid");
         }
 
         /// <inheritdoc />
