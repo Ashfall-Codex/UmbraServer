@@ -36,6 +36,8 @@ public partial class MareHub
             IsPublic = request.IsPublic,
             LogoImageBase64 = request.LogoImageBase64,
             BannerImageBase64 = request.BannerImageBase64,
+            ManagerUID = request.ManagerUID ?? UserUID,
+            ShowManagerOnProfile = true,
             CreatedUtc = now,
             UpdatedUtc = now,
             LocationType = (ModelEstablishmentLocationType)request.Location.LocationType,
@@ -82,6 +84,8 @@ public partial class MareHub
         establishment.IsPublic = request.IsPublic;
         establishment.LogoImageBase64 = request.LogoImageBase64;
         establishment.BannerImageBase64 = request.BannerImageBase64;
+        establishment.ManagerUID = request.ManagerUID;
+        establishment.ShowManagerOnProfile = request.ShowManagerOnProfile;
         establishment.UpdatedUtc = DateTime.UtcNow;
 
         if (request.Location != null)

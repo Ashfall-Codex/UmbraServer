@@ -55,6 +55,10 @@ namespace MareSynchronosServer.Utils
                 UpdatedUtc = establishment.UpdatedUtc,
                 LogoImageBase64 = establishment.LogoImageBase64,
                 BannerImageBase64 = establishment.BannerImageBase64,
+                ManagerUID = establishment.ManagerUID,
+                ManagerAlias = string.Equals(establishment.ManagerUID, establishment.OwnerUID, StringComparison.Ordinal)
+                    ? establishment.Owner?.Alias : null,
+                ShowManagerOnProfile = establishment.ShowManagerOnProfile,
                 Location = new EstablishmentLocationDto
                 {
                     LocationType = (int)establishment.LocationType,

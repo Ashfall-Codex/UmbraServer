@@ -62,6 +62,11 @@ public class Establishment
     public string? LogoImageBase64 { get; set; }
     public string? BannerImageBase64 { get; set; }
 
+    // Manager
+    [MaxLength(10)]
+    public string? ManagerUID { get; set; }
+    public bool ShowManagerOnProfile { get; set; } = true;
+
     public ICollection<EstablishmentEvent> Events { get; set; } = [];
 }
 

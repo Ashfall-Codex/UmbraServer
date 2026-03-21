@@ -259,6 +259,7 @@ public class MareDbContext : DbContext
         mb.Entity<Establishment>().Property(e => e.UpdatedUtc).HasColumnType("timestamp with time zone");
         mb.Entity<Establishment>().Property(e => e.LogoImageBase64).HasColumnType("text");
         mb.Entity<Establishment>().Property(e => e.BannerImageBase64).HasColumnType("text");
+        mb.Entity<Establishment>().Property(e => e.ManagerUID).HasMaxLength(10);
         mb.Entity<Establishment>().HasMany(e => e.Events).WithOne(ev => ev.Establishment)
             .HasForeignKey(ev => ev.EstablishmentId).OnDelete(DeleteBehavior.Cascade);
 
