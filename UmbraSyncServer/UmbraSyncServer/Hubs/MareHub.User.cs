@@ -198,11 +198,11 @@ public partial class MareHub
             return;
         }
 
-        // Validate format: 3-32 chars, letters/digits/_/- only
+        // Validate format: 3-15 chars, letters/digits/_/- only (DB column is varchar(15))
         var norm = trimmed.Normalize(NormalizationForm.FormKC);
-        if (norm.Length < 3 || norm.Length > 32 || !Regex.IsMatch(norm, "^[A-Za-z0-9_-]+$"))
+        if (norm.Length < 3 || norm.Length > 15 || !Regex.IsMatch(norm, "^[A-Za-z0-9_-]+$"))
         {
-            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Error, "Invalid Custom ID. Use 3-32 characters: letters, digits, underscore or hyphen.").ConfigureAwait(false);
+            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Error, "Invalid Custom ID. Use 3-15 characters: letters, digits, underscore or hyphen.").ConfigureAwait(false);
             return;
         }
 
@@ -217,7 +217,16 @@ public partial class MareHub
         }
 
         user.Alias = norm;
-        await DbContext.SaveChangesAsync().ConfigureAwait(false);
+        try
+        {
+            await DbContext.SaveChangesAsync().ConfigureAwait(false);
+        }
+        catch (Microsoft.EntityFrameworkCore.DbUpdateException ex)
+        {
+            _logger.LogWarning(ex, "DbUpdateException while setting alias '{Alias}' for user {UID}", norm, UserUID);
+            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Error, $"Custom ID '{norm}' could not be saved. It may already be taken.").ConfigureAwait(false);
+            return;
+        }
         await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Information, $"Your Custom ID is now '{norm}'.").ConfigureAwait(false);
     }
 

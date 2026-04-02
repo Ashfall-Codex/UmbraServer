@@ -63,6 +63,7 @@ public class MareDbContext : DbContext
     public DbSet<HousingShareAllowedGroup> HousingShareAllowedGroups { get; set; }
     public DbSet<Establishment> Establishments { get; set; }
     public DbSet<EstablishmentEvent> EstablishmentEvents { get; set; }
+    public DbSet<WildRpAnnouncement> WildRpAnnouncements { get; set; }
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -74,6 +75,7 @@ public class MareDbContext : DbContext
         ConfigureSlotEntities(mb);
         ConfigureHousingShareEntities(mb);
         ConfigureEstablishmentEntities(mb);
+        ConfigureWildRpEntities(mb);
     }
 
     private static void ConfigureSlotEntities(ModelBuilder mb)
@@ -270,5 +272,18 @@ public class MareDbContext : DbContext
         mb.Entity<EstablishmentEvent>().Property(e => e.StartsAtUtc).HasColumnType("timestamp with time zone");
         mb.Entity<EstablishmentEvent>().Property(e => e.EndsAtUtc).HasColumnType("timestamp with time zone");
         mb.Entity<EstablishmentEvent>().Property(e => e.CreatedUtc).HasColumnType("timestamp with time zone");
+    }
+
+    private static void ConfigureWildRpEntities(ModelBuilder mb)
+    {
+        mb.Entity<WildRpAnnouncement>().ToTable("wild_rp_announcements");
+        mb.Entity<WildRpAnnouncement>().HasIndex(a => a.UserUID).IsUnique();
+        mb.Entity<WildRpAnnouncement>().HasIndex(a => a.ExpiresAtUtc);
+        mb.Entity<WildRpAnnouncement>().HasIndex(a => a.WorldId);
+        mb.Entity<WildRpAnnouncement>().HasOne(a => a.Owner).WithMany().HasForeignKey(a => a.UserUID).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<WildRpAnnouncement>().HasOne(a => a.RpProfile).WithMany()
+            .HasForeignKey(a => a.RpProfileId).OnDelete(DeleteBehavior.SetNull);
+        mb.Entity<WildRpAnnouncement>().Property(a => a.CreatedAtUtc).HasColumnType("timestamp with time zone");
+        mb.Entity<WildRpAnnouncement>().Property(a => a.ExpiresAtUtc).HasColumnType("timestamp with time zone");
     }
 }

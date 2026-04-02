@@ -30,4 +30,9 @@ public class MareHubLogger
         string formattedArgs = args != null && args.Length != 0 ? "|" + string.Join(":", args) : string.Empty;
         _logger.LogWarning("{uid}:{method}{args}", _hub.UserUID, methodName, formattedArgs);
     }
+
+    public void LogWarning(Exception ex, string message, params object[] args)
+    {
+        _logger.LogWarning(ex, $"{{uid}}:{message}", [_hub.UserUID, .. args]);
+    }
 }

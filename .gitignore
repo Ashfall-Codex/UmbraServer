@@ -356,4 +356,6 @@ Docker/run/data/
 **/obj/
 **/bin/
 **/.idea/
+**/_publish/
+deploy.sh
 Umbraclient

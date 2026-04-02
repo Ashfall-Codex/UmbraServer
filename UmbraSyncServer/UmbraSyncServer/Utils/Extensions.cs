@@ -3,6 +3,7 @@ using UmbraSync.API.Data.Enum;
 using UmbraSync.API.Data.Extensions;
 using UmbraSync.API.Dto.Establishment;
 using UmbraSync.API.Dto.Slot;
+using UmbraSync.API.Dto.WildRp;
 using MareSynchronosShared.Models;
 
 namespace MareSynchronosServer.Utils
@@ -137,6 +138,24 @@ namespace MareSynchronosServer.Utils
             groupUserInfo.SetPinned(groupPair.IsPinned);
             groupUserInfo.SetModerator(groupPair.IsModerator);
             return groupUserInfo;
+        }
+
+        public static WildRpAnnouncementDto ToWildRpAnnouncementDto(this WildRpAnnouncement announcement)
+        {
+            return new WildRpAnnouncementDto
+            {
+                Id = announcement.Id,
+                UserUID = announcement.UserUID,
+                UserAlias = announcement.Owner?.Alias,
+                WorldId = announcement.WorldId,
+                TerritoryId = announcement.TerritoryId,
+                Message = announcement.Message,
+                RpFirstName = announcement.RpProfile?.RpFirstName,
+                RpLastName = announcement.RpProfile?.RpLastName,
+                RpProfilePictureBase64 = announcement.RpProfile?.RpProfilePictureBase64,
+                CreatedAtUtc = announcement.CreatedAtUtc,
+                ExpiresAtUtc = announcement.ExpiresAtUtc
+            };
         }
     }
 }

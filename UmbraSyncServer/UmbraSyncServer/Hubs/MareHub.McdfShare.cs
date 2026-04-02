@@ -267,6 +267,7 @@ public partial class MareHub
             OwnerAlias = share.Owner?.Alias ?? string.Empty,
             AllowedIndividuals = share.AllowedIndividuals.Select(i => i.AllowedIndividualUid).OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList(),
             AllowedSyncshells = share.AllowedSyncshells.Select(g => g.AllowedGroupGid).OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList(),
+            DataSize = share.CipherData?.Length ?? 0,
         };
     }
 

@@ -268,6 +268,7 @@ public class Startup
                 builder.MigrationsAssembly("UmbraSyncShared");
             }).UseSnakeCaseNamingConvention();
             options.EnableThreadSafetyChecks(false);
+            options.ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
         }, mareConfig.GetValue(nameof(MareConfigurationBase.DbContextPoolSize), 1024));
         services.AddDbContextFactory<MareDbContext>(options =>
         {
@@ -277,6 +278,7 @@ public class Startup
                 builder.MigrationsAssembly("UmbraSyncShared");
             }).UseSnakeCaseNamingConvention();
             options.EnableThreadSafetyChecks(false);
+            options.ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
         });
     }
 
@@ -364,8 +366,8 @@ public class Startup
         {
             endpoints.MapHub<MareHub>(IMareHub.Path, options =>
             {
-                options.ApplicationMaxBufferSize = 5242880;
-                options.TransportMaxBufferSize = 5242880;
+                options.ApplicationMaxBufferSize = 104857600;
+                options.TransportMaxBufferSize = 104857600;
                 options.Transports = HttpTransportType.WebSockets | HttpTransportType.ServerSentEvents | HttpTransportType.LongPolling;
             });
 

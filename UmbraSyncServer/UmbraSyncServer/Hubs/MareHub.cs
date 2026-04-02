@@ -58,7 +58,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         _absoluteMaxGroupUserCount = configuration.GetValueOrDefault(nameof(ServerConfiguration.AbsoluteMaxGroupUserCount), 200);
         _fileServerAddress = configuration.GetValue<Uri>(nameof(ServerConfiguration.CdnFullUrl));
         _expectedClientVersion = configuration.GetValueOrDefault(nameof(ServerConfiguration.ExpectedClientVersion), new Version(0, 0, 0));
-        _maxCharaDataByUser = configuration.GetValueOrDefault(nameof(ServerConfiguration.MaxCharaDataByUser), 10);
+        _maxCharaDataByUser = configuration.GetValueOrDefault(nameof(ServerConfiguration.MaxCharaDataByUser), 30);
         _contextAccessor = contextAccessor;
         _redis = redisDb;
         _gPoseLobbyDistributionService = gPoseLobbyDistributionService;
@@ -201,6 +201,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
                     {
                         await GposeLobbyLeave().ConfigureAwait(false);
                         await QuestSessionLeave().ConfigureAwait(false);
+                        await WildRpWithdraw().ConfigureAwait(false);
                         await RemoveUserFromRedis().ConfigureAwait(false);
                         await SendOfflineToAllPairedUsers().ConfigureAwait(false);
                         await _pairCacheService.DisposePlayer(UserUID).ConfigureAwait(false);
