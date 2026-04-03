@@ -20,6 +20,9 @@ public class WildRpAnnouncement
 
     public uint TerritoryId { get; set; }
 
+    [MaxLength(60)]
+    public string? CharacterName { get; set; }
+
     [MaxLength(200)]
     public string? Message { get; set; }
 

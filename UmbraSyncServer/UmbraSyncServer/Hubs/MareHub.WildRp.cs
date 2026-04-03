@@ -28,11 +28,16 @@ public partial class MareHub
             DbContext.WildRpAnnouncements.Remove(existing);
 
         var now = DateTime.UtcNow;
+        var characterName = request.CharacterName?.Trim();
+        if (characterName != null && characterName.Length > 60)
+            characterName = characterName[..60];
+
         var announcement = new WildRpAnnouncement
         {
             UserUID = UserUID,
             WorldId = request.WorldId,
             TerritoryId = request.TerritoryId,
+            CharacterName = characterName,
             Message = message,
             RpProfileId = request.RpProfileId,
             CreatedAtUtc = now,
