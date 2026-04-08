@@ -16,6 +16,30 @@ public partial class MareHub
     public string UserUID => Context.User?.Claims?.SingleOrDefault(c => string.Equals(c.Type, MareClaimTypes.Uid, StringComparison.Ordinal))?.Value ?? throw new Exception("No UID in Claims");
 
     public string Continent => Context.User?.Claims?.SingleOrDefault(c => string.Equals(c.Type, MareClaimTypes.Continent, StringComparison.Ordinal))?.Value ?? "UNK";
+    
+    private async Task SafeLifecycleStep(string stepName, Func<Task> action)
+    {
+        try
+        {
+            await action().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCallWarning(MareHubLogger.Args(stepName, "failed", ex.GetType().Name, ex.Message));
+        }
+    }
+    
+    private void SafeLifecycleStep(string stepName, Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCallWarning(MareHubLogger.Args(stepName, "failed", ex.GetType().Name, ex.Message));
+        }
+    }
 
     private async Task DeleteUser(User user)
     {

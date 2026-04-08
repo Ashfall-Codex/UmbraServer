@@ -129,8 +129,8 @@ public class DiscoveryWellKnownProvider : IHostedService
     {
         [JsonPropertyName("api_url")] public string ApiUrl { get; set; } = string.Empty;
         [JsonPropertyName("hub_url")] public string HubUrl { get; set; } = string.Empty;
-        [JsonPropertyName("skip_negotiation")] public bool SkipNegotiation { get; set; } = true;
-        [JsonPropertyName("transports")] public string[] Transports { get; set; } = new[] { "websockets" };
+        [JsonPropertyName("skip_negotiation")] public bool SkipNegotiation { get; set; } = false;
+        [JsonPropertyName("transports")] public string[] Transports { get; set; } = new[] { "websockets", "serversentevents", "longpolling" };
         [JsonPropertyName("features")] public Features Features { get; set; } = new();
         [JsonPropertyName("nearby_discovery")] public Nearby NearbyDiscovery { get; set; } = new();
     }

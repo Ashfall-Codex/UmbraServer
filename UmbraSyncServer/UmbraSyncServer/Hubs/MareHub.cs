@@ -41,6 +41,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
 
     private readonly Lazy<MareDbContext> _dbContextLazy;
     private MareDbContext DbContext => _dbContextLazy.Value;
+    private CancellationTokenSource _disconnectCts;
 
     public MareHub(MareMetrics mareMetrics,
         IDbContextFactory<MareDbContext> mareDbContextFactory, ILogger<MareHub> logger, SystemInfoService systemInfoService,
@@ -74,6 +75,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         if (disposing)
         {
             DbContext.Dispose();
+            _disconnectCts?.Dispose();
         }
 
         base.Dispose(disposing);
@@ -139,42 +141,38 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
     {
         _mareMetrics.IncGaugeWithLabels(MetricsAPI.GaugeConnections, labels: Continent);
 
-        try
+        _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent));
+
+        await SafeLifecycleStep("InitPlayer", () => _pairCacheService.InitPlayer(UserUID)).ConfigureAwait(false);
+        await SafeLifecycleStep("UpdateUserOnRedis", () => UpdateUserOnRedis()).ConfigureAwait(false);
+
+        bool isFirstConnection = false;
+        await SafeLifecycleStep("RegisterConnectionInRedis", async () =>
         {
-            _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), UserCharaIdent));
+            await _redis.SetAddAsync($"connections:{UserCharaIdent}", Context.ConnectionId).ConfigureAwait(false);
+            await _redis.AddAsync($"active:{UserCharaIdent}", Context.ConnectionId, expiresIn: TimeSpan.FromMinutes(5)).ConfigureAwait(false);
+            var connections = await _redis.SetMembersAsync<string>($"connections:{UserCharaIdent}").ConfigureAwait(false);
+            isFirstConnection = connections?.Length == 1;
+        }).ConfigureAwait(false);
 
-            await _pairCacheService.InitPlayer(UserUID).ConfigureAwait(false);
-            await UpdateUserOnRedis().ConfigureAwait(false);
-            try
-            {
-                await _redis.SetAddAsync($"connections:{UserCharaIdent}", Context.ConnectionId).ConfigureAwait(false);
-                await _redis.AddAsync($"active:{UserCharaIdent}", Context.ConnectionId, expiresIn: TimeSpan.FromMinutes(5)).ConfigureAwait(false);
-                var connections = await _redis.SetMembersAsync<string>($"connections:{UserCharaIdent}").ConfigureAwait(false);
-
-                if (connections?.Length == 1)
-                {
-                    try
-                    {
-                        await SendOnlineToAllPairedUsers().ConfigureAwait(false);
-                    }
-                    catch { }
-                }
-                try
-                {
-                    var allPairedUsers = await GetAllPairedUnpausedUsers().ConfigureAwait(false);
-                    var onlinePairs = await GetOnlineUsers(allPairedUsers).ConfigureAwait(false);
-                    foreach (var kvp in onlinePairs)
-                    {
-                        await Clients.Caller
-                            .Client_UserSendOnline(new(new(kvp.Key), kvp.Value))
-                            .ConfigureAwait(false);
-                    }
-                }
-                catch { }
-            }
-            catch { }
+        if (isFirstConnection)
+        {
+            await SafeLifecycleStep("SendOnlineToAllPairedUsers", async () => { _ = await SendOnlineToAllPairedUsers().ConfigureAwait(false); }).ConfigureAwait(false);
         }
-        catch { }
+
+        await SafeLifecycleStep("NotifyCallerOfOnlinePairs", async () =>
+        {
+            var allPairedUsers = await GetAllPairedUnpausedUsers().ConfigureAwait(false);
+            var onlinePairs = await GetOnlineUsers(allPairedUsers).ConfigureAwait(false);
+            foreach (var kvp in onlinePairs)
+            {
+                await Clients.Caller
+                    .Client_UserSendOnline(new(new(kvp.Key), kvp.Value))
+                    .ConfigureAwait(false);
+            }
+        }).ConfigureAwait(false);
+
+        _logger.LogCallInfo(MareHubLogger.Args("Connect setup complete", Context.ConnectionId, isFirstConnection ? "first" : "additional"));
 
         await base.OnConnectedAsync().ConfigureAwait(false);
     }
@@ -183,40 +181,45 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
     public override async Task OnDisconnectedAsync(Exception exception)
     {
         _mareMetrics.DecGaugeWithLabels(MetricsAPI.GaugeConnections, labels: Continent);
+        _disconnectCts?.Dispose();
+        _disconnectCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        try
+        _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent));
+        if (exception != null)
+            _logger.LogCallWarning(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, "DisconnectException", exception.GetType().Name, exception.Message));
+        
+        bool shouldCleanup = false;
+        await SafeLifecycleStep("RemoveConnectionFromRedis", async () =>
         {
-            _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), UserCharaIdent));
-            if (exception != null)
-                _logger.LogCallWarning(MareHubLogger.Args(_contextAccessor.GetIpAddress(), exception.Message, exception.StackTrace));
-
-            try
+            await _redis.SetRemoveAsync($"connections:{UserCharaIdent}", Context.ConnectionId).ConfigureAwait(false);
+            var connections = await _redis.SetMembersAsync<string>($"connections:{UserCharaIdent}").ConfigureAwait(false);
+            if (connections == null || connections.Length == 0)
             {
-                await _redis.SetRemoveAsync($"connections:{UserCharaIdent}", Context.ConnectionId).ConfigureAwait(false);
-                var connections = await _redis.SetMembersAsync<string>($"connections:{UserCharaIdent}").ConfigureAwait(false);
-                if (connections == null || connections.Length == 0)
+                var activeConnectionId = await _redis.GetAsync<string>($"active:{UserCharaIdent}").ConfigureAwait(false);
+                if (string.IsNullOrEmpty(activeConnectionId) || string.Equals(activeConnectionId, Context.ConnectionId, StringComparison.Ordinal))
                 {
-                    var activeConnectionId = await _redis.GetAsync<string>($"active:{UserCharaIdent}").ConfigureAwait(false);
-                    if (string.IsNullOrEmpty(activeConnectionId) || string.Equals(activeConnectionId, Context.ConnectionId, StringComparison.Ordinal))
-                    {
-                        await GposeLobbyLeave().ConfigureAwait(false);
-                        await QuestSessionLeave().ConfigureAwait(false);
-                        await WildRpWithdraw().ConfigureAwait(false);
-                        await RemoveUserFromRedis().ConfigureAwait(false);
-                        await SendOfflineToAllPairedUsers().ConfigureAwait(false);
-                        await _pairCacheService.DisposePlayer(UserUID).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        _logger.LogCallWarning(MareHubLogger.Args("ObsoleteConnectionId", Context.ConnectionId, "Active", activeConnectionId));
-                    }
+                    shouldCleanup = true;
+                }
+                else
+                {
+                    _logger.LogCallWarning(MareHubLogger.Args("ObsoleteConnectionId", Context.ConnectionId, "Active", activeConnectionId));
                 }
             }
-            catch { }
+        }).ConfigureAwait(false);
 
-            _ = TypingGroupsByConnection.TryRemove(Context.ConnectionId, out _);
+        if (shouldCleanup)
+        {
+            await SafeLifecycleStep("GposeLobbyLeave", async () => { _ = await GposeLobbyLeave().ConfigureAwait(false); }).ConfigureAwait(false);
+            await SafeLifecycleStep("QuestSessionLeave", async () => { _ = await QuestSessionLeave().ConfigureAwait(false); }).ConfigureAwait(false);
+            await SafeLifecycleStep("WildRpWithdraw", async () => { _ = await WildRpWithdraw().ConfigureAwait(false); }).ConfigureAwait(false);
+            await SafeLifecycleStep("RemoveUserFromRedis", () => RemoveUserFromRedis()).ConfigureAwait(false);
+            await SafeLifecycleStep("SendOfflineToAllPairedUsers", async () => { _ = await SendOfflineToAllPairedUsers().ConfigureAwait(false); }).ConfigureAwait(false);
+            await SafeLifecycleStep("DisposePlayer", () => _pairCacheService.DisposePlayer(UserUID)).ConfigureAwait(false);
         }
-        catch { }
+
+        SafeLifecycleStep("RemoveTypingGroups", () => { TypingGroupsByConnection.TryRemove(Context.ConnectionId, out _); });
+
+        _logger.LogCallInfo(MareHubLogger.Args("Disconnect cleanup complete", Context.ConnectionId));
 
         await base.OnDisconnectedAsync(exception).ConfigureAwait(false);
     }
