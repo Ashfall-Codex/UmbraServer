@@ -17,6 +17,11 @@ public static class Extensions
                 return accessor.HttpContext.Request.Headers["X-Forwarded-For"];
             }
 
+            if (!string.IsNullOrEmpty(accessor.HttpContext.Request.Headers["X-Real-IP"]))
+            {
+                return accessor.HttpContext.Request.Headers["X-Real-IP"];
+            }
+
             var ipAddress = accessor.HttpContext.GetServerVariable("HTTP_X_FORWARDED_FOR");
 
             if (!string.IsNullOrWhiteSpace(ipAddress))

@@ -42,6 +42,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
     private readonly Lazy<MareDbContext> _dbContextLazy;
     private MareDbContext DbContext => _dbContextLazy.Value;
     private CancellationTokenSource _disconnectCts;
+    private DateTime _connectedAtUtc;
 
     public MareHub(MareMetrics mareMetrics,
         IDbContextFactory<MareDbContext> mareDbContextFactory, ILogger<MareHub> logger, SystemInfoService systemInfoService,
@@ -140,8 +141,9 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
     public override async Task OnConnectedAsync()
     {
         _mareMetrics.IncGaugeWithLabels(MetricsAPI.GaugeConnections, labels: Continent);
+        _connectedAtUtc = DateTime.UtcNow;
 
-        _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent));
+        _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent, "Transport", GetTransportType(), "UA", GetUserAgent()));
 
         await SafeLifecycleStep("InitPlayer", () => _pairCacheService.InitPlayer(UserUID)).ConfigureAwait(false);
         await SafeLifecycleStep("UpdateUserOnRedis", () => UpdateUserOnRedis()).ConfigureAwait(false);
@@ -160,6 +162,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
             await SafeLifecycleStep("SendOnlineToAllPairedUsers", async () => { _ = await SendOnlineToAllPairedUsers().ConfigureAwait(false); }).ConfigureAwait(false);
         }
 
+        int notifiedOnlinePairs = 0;
         await SafeLifecycleStep("NotifyCallerOfOnlinePairs", async () =>
         {
             var allPairedUsers = await GetAllPairedUnpausedUsers().ConfigureAwait(false);
@@ -169,8 +172,10 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
                 await Clients.Caller
                     .Client_UserSendOnline(new(new(kvp.Key), kvp.Value))
                     .ConfigureAwait(false);
+                notifiedOnlinePairs++;
             }
         }).ConfigureAwait(false);
+        _logger.LogCallInfo(MareHubLogger.Args("NotifyCallerOfOnlinePairs", "count", notifiedOnlinePairs));
 
         _logger.LogCallInfo(MareHubLogger.Args("Connect setup complete", Context.ConnectionId, isFirstConnection ? "first" : "additional"));
 
@@ -184,7 +189,19 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         _disconnectCts?.Dispose();
         _disconnectCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent));
+        var sessionDurationSec = _connectedAtUtc == default ? -1 : (int)(DateTime.UtcNow - _connectedAtUtc).TotalSeconds;
+        var exceptionType = exception?.GetType().Name ?? "null";
+        var exceptionMessage = exception?.Message ?? "null";
+
+        _logger.LogCallInfo(MareHubLogger.Args(
+            _contextAccessor.GetIpAddress(),
+            Context.ConnectionId,
+            UserCharaIdent,
+            "Transport", GetTransportType(),
+            "SessionSec", sessionDurationSec,
+            "ExceptionType", exceptionType,
+            "ExceptionMessage", exceptionMessage));
+
         if (exception != null)
             _logger.LogCallWarning(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, "DisconnectException", exception.GetType().Name, exception.Message));
         

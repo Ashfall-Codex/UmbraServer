@@ -6,6 +6,7 @@ using UmbraSync.API.Data;
 using UmbraSync.API.Dto.Group;
 using MareSynchronosShared.Metrics;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.Http.Connections.Features;
 
 namespace MareSynchronosServer.Hubs;
 
@@ -16,7 +17,21 @@ public partial class MareHub
     public string UserUID => Context.User?.Claims?.SingleOrDefault(c => string.Equals(c.Type, MareClaimTypes.Uid, StringComparison.Ordinal))?.Value ?? throw new Exception("No UID in Claims");
 
     public string Continent => Context.User?.Claims?.SingleOrDefault(c => string.Equals(c.Type, MareClaimTypes.Continent, StringComparison.Ordinal))?.Value ?? "UNK";
-    
+
+    private string GetTransportType()
+    {
+        try
+        {
+            return Context.Features.Get<IHttpTransportFeature>()?.TransportType.ToString() ?? "unknown";
+        }
+        catch
+        {
+            return "unknown";
+        }
+    }
+
+    private string GetUserAgent() => _contextAccessor.HttpContext?.Request.Headers["User-Agent"].ToString() ?? "null";
+
     private async Task SafeLifecycleStep(string stepName, Func<Task> action)
     {
         try

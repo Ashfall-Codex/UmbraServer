@@ -330,7 +330,16 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task UserPushData(UserCharaDataMessageDto dto)
     {
-        _logger.LogCallInfo(MareHubLogger.Args(dto.CharaData.FileReplacements.Count));
+        var fileReplacementsTotal = dto.CharaData.FileReplacements?.Values.Sum(v => v?.Count ?? 0) ?? 0;
+        var glamourerLen = dto.CharaData.GlamourerData?.Values.Sum(v => v?.Length ?? 0) ?? 0;
+        var customizeLen = dto.CharaData.CustomizePlusData?.Values.Sum(v => v?.Length ?? 0) ?? 0;
+        var manipulationLen = dto.CharaData.ManipulationData?.Length ?? 0;
+        _logger.LogCallInfo(MareHubLogger.Args(
+            "fileReplacements", fileReplacementsTotal,
+            "recipients", dto.Recipients?.Count ?? 0,
+            "sizeGlam", glamourerLen,
+            "sizeManip", manipulationLen,
+            "sizeCust", customizeLen));
 
         // check for honorific containing . and /
         try
