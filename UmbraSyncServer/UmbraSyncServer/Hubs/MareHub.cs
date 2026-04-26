@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using StackExchange.Redis.Extensions.Core.Abstractions;
+using System.Collections.Concurrent;
 
 namespace MareSynchronosServer.Hubs;
 
@@ -41,8 +42,9 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
 
     private readonly Lazy<MareDbContext> _dbContextLazy;
     private MareDbContext DbContext => _dbContextLazy.Value;
-    private DateTime _connectedAtUtc;
-    private string _transport = "unknown";
+
+    private static readonly ConcurrentDictionary<string, ConnectionMeta> ConnectionMetaByConnectionId = new(StringComparer.Ordinal);
+    private readonly record struct ConnectionMeta(DateTime ConnectedAtUtc, string Transport, string Continent);
 
     public MareHub(MareMetrics mareMetrics,
         IDbContextFactory<MareDbContext> mareDbContextFactory, ILogger<MareHub> logger, SystemInfoService systemInfoService,
@@ -139,11 +141,12 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
     [Authorize(Policy = "Authenticated")]
     public override async Task OnConnectedAsync()
     {
-        _connectedAtUtc = DateTime.UtcNow;
-        _transport = GetTransportType();
-        _mareMetrics.IncGaugeWithLabels(MetricsAPI.GaugeConnections, labels: new[] { Continent, _transport });
+        var transport = GetTransportType();
+        var continent = Continent;
+        ConnectionMetaByConnectionId[Context.ConnectionId] = new ConnectionMeta(DateTime.UtcNow, transport, continent);
+        _mareMetrics.IncGaugeWithLabels(MetricsAPI.GaugeConnections, labels: new[] { continent, transport });
 
-        _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent, "Transport", _transport, "UA", GetUserAgent()));
+        _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent, "Transport", transport, "UA", GetUserAgent()));
 
         await SafeLifecycleStep("InitPlayer", () => _pairCacheService.InitPlayer(UserUID)).ConfigureAwait(false);
         await SafeLifecycleStep("UpdateUserOnRedis", () => UpdateUserOnRedis()).ConfigureAwait(false);
@@ -185,9 +188,13 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
     [Authorize(Policy = "Authenticated")]
     public override async Task OnDisconnectedAsync(Exception exception)
     {
-        _mareMetrics.DecGaugeWithLabels(MetricsAPI.GaugeConnections, labels: new[] { Continent, _transport });
+        ConnectionMetaByConnectionId.TryRemove(Context.ConnectionId, out var meta);
+        var transport = meta.Transport ?? "unknown";
+        var continent = meta.Continent ?? Continent;
+        var sessionDurationSec = meta.ConnectedAtUtc == default ? -1 : (int)(DateTime.UtcNow - meta.ConnectedAtUtc).TotalSeconds;
 
-        var sessionDurationSec = _connectedAtUtc == default ? -1 : (int)(DateTime.UtcNow - _connectedAtUtc).TotalSeconds;
+        _mareMetrics.DecGaugeWithLabels(MetricsAPI.GaugeConnections, labels: new[] { continent, transport });
+
         var exceptionType = exception?.GetType().Name ?? "null";
         var exceptionMessage = exception?.Message ?? "null";
 
@@ -195,7 +202,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
             _contextAccessor.GetIpAddress(),
             Context.ConnectionId,
             UserCharaIdent,
-            "Transport", _transport,
+            "Transport", transport,
             "SessionSec", sessionDurationSec,
             "ExceptionType", exceptionType,
             "ExceptionMessage", exceptionMessage));
