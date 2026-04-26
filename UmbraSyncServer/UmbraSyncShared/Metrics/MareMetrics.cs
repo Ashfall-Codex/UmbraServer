@@ -21,7 +21,7 @@ public class MareMetrics
             if (!string.Equals(gauge, MetricsAPI.GaugeConnections, StringComparison.OrdinalIgnoreCase))
                 gauges.Add(gauge, Prometheus.Metrics.CreateGauge(gauge, gauge));
             else
-                gauges.Add(gauge, Prometheus.Metrics.CreateGauge(gauge, gauge, new[] { "continent" }));
+                gauges.Add(gauge, Prometheus.Metrics.CreateGauge(gauge, gauge, new[] { "continent", "transport" }));
         }
     }
 

@@ -124,6 +124,7 @@ public class Startup
             hubOptions.StreamBufferCapacity = 200;
             hubOptions.ClientTimeoutInterval = TimeSpan.FromMinutes(30);
             hubOptions.KeepAliveInterval = TimeSpan.FromSeconds(15);
+            hubOptions.HandshakeTimeout = TimeSpan.FromSeconds(30);
 
             hubOptions.AddFilter<SignalRLimitFilter>();
             hubOptions.AddFilter<ConcurrencyFilter>();

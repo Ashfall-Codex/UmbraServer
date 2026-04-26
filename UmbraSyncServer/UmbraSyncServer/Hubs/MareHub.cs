@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using StackExchange.Redis.Extensions.Core.Abstractions;
+using System.Collections.Concurrent;
 
 namespace MareSynchronosServer.Hubs;
 
@@ -41,8 +42,9 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
 
     private readonly Lazy<MareDbContext> _dbContextLazy;
     private MareDbContext DbContext => _dbContextLazy.Value;
-    private CancellationTokenSource _disconnectCts;
-    private DateTime _connectedAtUtc;
+
+    private static readonly ConcurrentDictionary<string, ConnectionMeta> ConnectionMetaByConnectionId = new(StringComparer.Ordinal);
+    private readonly record struct ConnectionMeta(DateTime ConnectedAtUtc, string Transport, string Continent);
 
     public MareHub(MareMetrics mareMetrics,
         IDbContextFactory<MareDbContext> mareDbContextFactory, ILogger<MareHub> logger, SystemInfoService systemInfoService,
@@ -76,7 +78,6 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         if (disposing)
         {
             DbContext.Dispose();
-            _disconnectCts?.Dispose();
         }
 
         base.Dispose(disposing);
@@ -140,10 +141,12 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
     [Authorize(Policy = "Authenticated")]
     public override async Task OnConnectedAsync()
     {
-        _mareMetrics.IncGaugeWithLabels(MetricsAPI.GaugeConnections, labels: Continent);
-        _connectedAtUtc = DateTime.UtcNow;
+        var transport = GetTransportType();
+        var continent = Continent;
+        ConnectionMetaByConnectionId[Context.ConnectionId] = new ConnectionMeta(DateTime.UtcNow, transport, continent);
+        _mareMetrics.IncGaugeWithLabels(MetricsAPI.GaugeConnections, labels: new[] { continent, transport });
 
-        _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent, "Transport", GetTransportType(), "UA", GetUserAgent()));
+        _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent, "Transport", transport, "UA", GetUserAgent()));
 
         await SafeLifecycleStep("InitPlayer", () => _pairCacheService.InitPlayer(UserUID)).ConfigureAwait(false);
         await SafeLifecycleStep("UpdateUserOnRedis", () => UpdateUserOnRedis()).ConfigureAwait(false);
@@ -185,11 +188,13 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
     [Authorize(Policy = "Authenticated")]
     public override async Task OnDisconnectedAsync(Exception exception)
     {
-        _mareMetrics.DecGaugeWithLabels(MetricsAPI.GaugeConnections, labels: Continent);
-        _disconnectCts?.Dispose();
-        _disconnectCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        ConnectionMetaByConnectionId.TryRemove(Context.ConnectionId, out var meta);
+        var transport = meta.Transport ?? "unknown";
+        var continent = meta.Continent ?? Continent;
+        var sessionDurationSec = meta.ConnectedAtUtc == default ? -1 : (int)(DateTime.UtcNow - meta.ConnectedAtUtc).TotalSeconds;
 
-        var sessionDurationSec = _connectedAtUtc == default ? -1 : (int)(DateTime.UtcNow - _connectedAtUtc).TotalSeconds;
+        _mareMetrics.DecGaugeWithLabels(MetricsAPI.GaugeConnections, labels: new[] { continent, transport });
+
         var exceptionType = exception?.GetType().Name ?? "null";
         var exceptionMessage = exception?.Message ?? "null";
 
@@ -197,13 +202,10 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
             _contextAccessor.GetIpAddress(),
             Context.ConnectionId,
             UserCharaIdent,
-            "Transport", GetTransportType(),
+            "Transport", transport,
             "SessionSec", sessionDurationSec,
             "ExceptionType", exceptionType,
             "ExceptionMessage", exceptionMessage));
-
-        if (exception != null)
-            _logger.LogCallWarning(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, "DisconnectException", exception.GetType().Name, exception.Message));
         
         bool shouldCleanup = false;
         await SafeLifecycleStep("RemoveConnectionFromRedis", async () =>
