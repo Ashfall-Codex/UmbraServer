@@ -73,7 +73,7 @@ public class Startup
             a.FeatureProviders.Remove(a.FeatureProviders.OfType<ControllerFeatureProvider>().First());
             if (mareConfig.GetValue<Uri>(nameof(ServerConfiguration.MainServerAddress), defaultValue: null) == null)
             {
-                a.FeatureProviders.Add(new AllowedControllersFeatureProvider(typeof(MareServerConfigurationController), typeof(MareBaseConfigurationController), typeof(ClientMessageController), typeof(MainController), typeof(DiscoveryNotifyController)));
+                a.FeatureProviders.Add(new AllowedControllersFeatureProvider(typeof(MareServerConfigurationController), typeof(MareBaseConfigurationController), typeof(ClientMessageController), typeof(MainController), typeof(DiscoveryNotifyController), typeof(ConnectController)));
             }
             else
             {
@@ -110,6 +110,12 @@ public class Startup
     services.AddSingleton(TimeProvider.System);
     services.AddSingleton<AutoDetectScheduleCache>();
     services.AddHostedService<AutoDetectScheduleService>();
+
+    // Ashfall Connect — client HTTP typé. Inactif tant que ConnectBaseUrl n'est pas défini en config.
+    services.AddHttpClient<ConnectClient>(client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(10);
+    });
 }
 
     private static void ConfigureSignalR(IServiceCollection services, IConfigurationSection mareConfig)

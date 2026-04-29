@@ -39,6 +39,10 @@ public class ServerConfiguration : MareConfigurationBase
     [RemoteConfiguration]
     public bool BroadcastPresenceOnPermissionChange { get; set; } = false;
     public int HubExecutionConcurrencyLimit { get; set; } = 50;
+    
+    public Uri ConnectBaseUrl { get; set; }
+    [SensitiveConfiguration]
+    public string ConnectServiceToken { get; set; } = string.Empty;
 
     public override string ToString()
     {
@@ -57,6 +61,8 @@ public class ServerConfiguration : MareConfigurationBase
         sb.AppendLine($"{nameof(MaxCharaDataByUser)} => {MaxCharaDataByUser}");
         sb.AppendLine($"{nameof(BroadcastPresenceOnPermissionChange)} => {BroadcastPresenceOnPermissionChange}");
         sb.AppendLine($"{nameof(HubExecutionConcurrencyLimit)} => {HubExecutionConcurrencyLimit}");
+        sb.AppendLine($"{nameof(ConnectBaseUrl)} => {ConnectBaseUrl}");
+        sb.AppendLine($"{nameof(ConnectServiceToken)} => ***");
         return sb.ToString();
     }
 }
