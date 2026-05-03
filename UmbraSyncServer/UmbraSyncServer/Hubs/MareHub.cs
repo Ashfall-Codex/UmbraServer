@@ -45,6 +45,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
 
     private static readonly ConcurrentDictionary<string, ConnectionMeta> ConnectionMetaByConnectionId = new(StringComparer.Ordinal);
     private readonly record struct ConnectionMeta(DateTime ConnectedAtUtc, string Transport, string Continent);
+    private static readonly ConcurrentDictionary<string, string> _userConnections = new(StringComparer.Ordinal);
 
     public MareHub(MareMetrics mareMetrics,
         IDbContextFactory<MareDbContext> mareDbContextFactory, ILogger<MareHub> logger, SystemInfoService systemInfoService,
@@ -144,7 +145,26 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         var transport = GetTransportType();
         var continent = Continent;
         ConnectionMetaByConnectionId[Context.ConnectionId] = new ConnectionMeta(DateTime.UtcNow, transport, continent);
-        _mareMetrics.IncGaugeWithLabels(MetricsAPI.GaugeConnections, labels: new[] { continent, transport });
+        string? previousConnectionId = null;
+        bool isNewUserConnection = true;
+        _userConnections.AddOrUpdate(
+            UserUID,
+            addValueFactory: _ => Context.ConnectionId,
+            updateValueFactory: (_, existing) =>
+            {
+                previousConnectionId = existing;
+                isNewUserConnection = false;
+                return Context.ConnectionId;
+            });
+
+        if (isNewUserConnection)
+        {
+            _mareMetrics.IncGaugeWithLabels(MetricsAPI.GaugeConnections, labels: new[] { continent, transport });
+        }
+        else
+        {
+            _logger.LogCallWarning(MareHubLogger.Args("UpdatingConnectionId", "Old", previousConnectionId, "New", Context.ConnectionId));
+        }
 
         _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent, "Transport", transport, "UA", GetUserAgent()));
 
@@ -183,8 +203,13 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         var transport = meta.Transport ?? "unknown";
         var continent = meta.Continent ?? Continent;
         var sessionDurationSec = meta.ConnectedAtUtc == default ? -1 : (int)(DateTime.UtcNow - meta.ConnectedAtUtc).TotalSeconds;
-
-        _mareMetrics.DecGaugeWithLabels(MetricsAPI.GaugeConnections, labels: new[] { continent, transport });
+        bool isCurrentUserConnection = _userConnections.TryGetValue(UserUID, out var currentConnectionId)
+            && string.Equals(currentConnectionId, Context.ConnectionId, StringComparison.Ordinal);
+        if (isCurrentUserConnection)
+        {
+            _userConnections.TryRemove(new KeyValuePair<string, string>(UserUID, Context.ConnectionId));
+            _mareMetrics.DecGaugeWithLabels(MetricsAPI.GaugeConnections, labels: new[] { continent, transport });
+        }
 
         var exceptionType = exception?.GetType().Name ?? "null";
         var exceptionMessage = exception?.Message ?? "null";
