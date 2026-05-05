@@ -3,12 +3,15 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using MareSynchronosShared.Services;
+using MareSynchronosShared.Utils.Configuration;
 
 namespace MareSynchronosAuthService.Services;
 
 public class DiscoveryWellKnownProvider : IHostedService
 {
     private readonly ILogger<DiscoveryWellKnownProvider> _logger;
+    private readonly IConfigurationService<AuthServiceConfiguration> _configuration;
     private readonly object _lock = new();
     private byte[] _currentSalt = Array.Empty<byte>();
     private DateTimeOffset _currentSaltExpiresAt;
@@ -16,12 +19,14 @@ public class DiscoveryWellKnownProvider : IHostedService
     private DateTimeOffset _previousSaltExpiresAt;
     private readonly TimeSpan _gracePeriod = TimeSpan.FromMinutes(5);
     private Timer? _rotationTimer;
-    private readonly TimeSpan _saltTtl = TimeSpan.FromDays(30 * 6); 
+    private readonly TimeSpan _saltTtl = TimeSpan.FromDays(30 * 6);
     private readonly int _refreshSec = 86400; // 24h
 
-    public DiscoveryWellKnownProvider(ILogger<DiscoveryWellKnownProvider> logger)
+    public DiscoveryWellKnownProvider(ILogger<DiscoveryWellKnownProvider> logger,
+        IConfigurationService<AuthServiceConfiguration> configuration)
     {
         _logger = logger;
+        _configuration = configuration;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -92,10 +97,13 @@ public class DiscoveryWellKnownProvider : IHostedService
             exp = _currentSaltExpiresAt;
         }
 
+        var fallbackHubUrl = _configuration.GetValueOrDefault(nameof(AuthServiceConfiguration.FallbackHubUrl), string.Empty);
+
         var root = new WellKnownRoot
         {
             ApiUrl = $"{wsScheme}://{host}",
             HubUrl = $"{wsScheme}://{host}/mare",
+            FallbackHubUrl = string.IsNullOrWhiteSpace(fallbackHubUrl) ? null : fallbackHubUrl,
             Features = new() { NearbyDiscovery = true },
             NearbyDiscovery = new()
             {
@@ -129,6 +137,7 @@ public class DiscoveryWellKnownProvider : IHostedService
     {
         [JsonPropertyName("api_url")] public string ApiUrl { get; set; } = string.Empty;
         [JsonPropertyName("hub_url")] public string HubUrl { get; set; } = string.Empty;
+        [JsonPropertyName("fallback_hub_url")] public string? FallbackHubUrl { get; set; }
         [JsonPropertyName("skip_negotiation")] public bool SkipNegotiation { get; set; } = false;
         [JsonPropertyName("transports")] public string[] Transports { get; set; } = new[] { "websockets", "serversentevents", "longpolling" };
         [JsonPropertyName("features")] public Features Features { get; set; } = new();

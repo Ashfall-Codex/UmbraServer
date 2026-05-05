@@ -39,6 +39,24 @@ public class ServerConfiguration : MareConfigurationBase
     [RemoteConfiguration]
     public bool BroadcastPresenceOnPermissionChange { get; set; } = false;
     public int HubExecutionConcurrencyLimit { get; set; } = 50;
+
+    /// <summary>
+    /// Padding bytes attached to each Client_KeepAlive push from the server.
+    /// Default 256 — assez pour être compté comme du trafic applicatif par les
+    /// middleboxes stateful sans gaspiller de la bande passante. Peut être bumpé à
+    /// 2048+ via remote-config si on découvre un middlebox plus pointilleux.
+    /// Set to 0 to disable padding (only the keep-alive frame envelope is sent).
+    /// </summary>
+    [RemoteConfiguration]
+    public int KeepAlivePaddingBytes { get; set; } = 256;
+
+    /// <summary>
+    /// Interval between two keep-alive pushes per active connection. Default 5s.
+    /// Should remain well below the most aggressive middlebox conntrack timeout
+    /// observed in the wild for this hub (~14s on certain Free FR + AV combos).
+    /// </summary>
+    [RemoteConfiguration]
+    public int KeepAliveIntervalSeconds { get; set; } = 5;
     
     public Uri ConnectBaseUrl { get; set; }
     [SensitiveConfiguration]

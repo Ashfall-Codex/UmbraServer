@@ -58,6 +58,18 @@ public class Startup
         ConnectionMultiplexer connectionMultiplexer = ConnectionMultiplexer.Connect(options);
         services.AddSingleton<IConnectionMultiplexer>(connectionMultiplexer);
 
+        var messagePackResolver = CompositeResolver.Create(StandardResolverAllowPrivate.Instance,
+            BuiltinResolver.Instance,
+            AttributeFormatterResolver.Instance,
+            // replace enum resolver
+            DynamicEnumAsStringResolver.Instance,
+            DynamicGenericResolver.Instance,
+            DynamicUnionResolver.Instance,
+            DynamicObjectResolver.Instance,
+            PrimitiveObjectResolver.Instance,
+            // final fallback(last priority)
+            StandardResolver.Instance);
+
         var signalRServiceBuilder = services.AddSignalR(hubOptions =>
         {
             hubOptions.MaximumReceiveMessageSize = long.MaxValue;
@@ -66,22 +78,16 @@ public class Startup
             hubOptions.StreamBufferCapacity = 200;
         }).AddMessagePackProtocol(opt =>
         {
-            var resolver = CompositeResolver.Create(StandardResolverAllowPrivate.Instance,
-                BuiltinResolver.Instance,
-                AttributeFormatterResolver.Instance,
-                // replace enum resolver
-                DynamicEnumAsStringResolver.Instance,
-                DynamicGenericResolver.Instance,
-                DynamicUnionResolver.Instance,
-                DynamicObjectResolver.Instance,
-                PrimitiveObjectResolver.Instance,
-                // final fallback(last priority)
-                StandardResolver.Instance);
-
             opt.SerializerOptions = MessagePackSerializerOptions.Standard
                 .WithCompression(MessagePackCompression.Lz4Block)
-                .WithResolver(resolver);
+                .WithResolver(messagePackResolver);
         });
+
+        // Protocole MessagePack additionnel sans LZ4 — doit être enregistré sur tous les services
+        // qui partagent le Redis backplane SignalR pour que le pré-encodage fonctionne
+        // pour les clients SlowConnection.
+        services.AddSingleton<Microsoft.AspNetCore.SignalR.Protocol.IHubProtocol>(_ =>
+            new MareSynchronosShared.Protocols.NoLz4MessagePackHubProtocol(messagePackResolver));
 
         // configure redis for SignalR
         var redisConnection = mareConfig.GetValue(nameof(MareConfigurationBase.RedisConnectionString), string.Empty);

@@ -34,6 +34,8 @@ namespace MareSynchronosServer.Hubs
 
         public Task Client_UpdateSystemInfo(SystemInfoDto systemInfo) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
 
+        public Task Client_KeepAlive(byte[] padding) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
+
         public Task Client_UserAddClientPair(UserPairDto dto) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
 
         public Task Client_ReceivePairRequest(UserDto requester) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");

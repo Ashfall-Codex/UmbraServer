@@ -113,6 +113,16 @@ public class Startup
                 options.EnableThreadSafetyChecks(false);
             }, mareConfig.GetValue(nameof(MareConfigurationBase.DbContextPoolSize), 1024));
 
+            var messagePackResolver = CompositeResolver.Create(StandardResolverAllowPrivate.Instance,
+                BuiltinResolver.Instance,
+                AttributeFormatterResolver.Instance,
+                DynamicEnumAsStringResolver.Instance,
+                DynamicGenericResolver.Instance,
+                DynamicUnionResolver.Instance,
+                DynamicObjectResolver.Instance,
+                PrimitiveObjectResolver.Instance,
+                StandardResolver.Instance);
+
             var signalRServiceBuilder = services.AddSignalR(hubOptions =>
             {
                 hubOptions.MaximumReceiveMessageSize = long.MaxValue;
@@ -121,24 +131,14 @@ public class Startup
                 hubOptions.StreamBufferCapacity = 200;
             }).AddMessagePackProtocol(opt =>
             {
-                var resolver = CompositeResolver.Create(StandardResolverAllowPrivate.Instance,
-                    BuiltinResolver.Instance,
-                    AttributeFormatterResolver.Instance,
-                    // replace enum resolver
-                    DynamicEnumAsStringResolver.Instance,
-                    DynamicGenericResolver.Instance,
-                    DynamicUnionResolver.Instance,
-                    DynamicObjectResolver.Instance,
-                    PrimitiveObjectResolver.Instance,
-                    // final fallback(last priority)
-                    StandardResolver.Instance);
-
                 opt.SerializerOptions = MessagePackSerializerOptions.Standard
                     .WithCompression(MessagePackCompression.Lz4Block)
-                    .WithResolver(resolver);
+                    .WithResolver(messagePackResolver);
             });
+            
+            services.AddSingleton<Microsoft.AspNetCore.SignalR.Protocol.IHubProtocol>(_ =>
+                new MareSynchronosShared.Protocols.NoLz4MessagePackHubProtocol(messagePackResolver));
 
-            // configure redis for SignalR
             var redisConnection = mareConfig.GetValue(nameof(ServerConfiguration.RedisConnectionString), string.Empty);
             signalRServiceBuilder.AddStackExchangeRedis(redisConnection, options => { });
 

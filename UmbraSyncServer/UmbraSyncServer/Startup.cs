@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using MareSynchronosServer.Hubs;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.SignalR.Protocol;
 using Microsoft.AspNetCore.Authorization;
 using AspNetCoreRateLimit;
 using MareSynchronosShared.Data;
@@ -92,6 +93,8 @@ public class Startup
         services.AddSingleton<ServerTokenGenerator>();
         services.AddSingleton<SystemInfoService>();
         services.AddHostedService(provider => provider.GetService<SystemInfoService>());
+        services.AddSingleton<KeepAliveBroadcastService>();
+        services.AddHostedService(provider => provider.GetService<KeepAliveBroadcastService>());
         // configure services based on main server status
         ConfigureServicesBasedOnShardType(services, mareConfig, isMainServer);
 
@@ -122,6 +125,16 @@ public class Startup
     {
         services.AddSingleton<IUserIdProvider, IdBasedUserIdProvider>();
 
+        var messagePackResolver = CompositeResolver.Create(StandardResolverAllowPrivate.Instance,
+            BuiltinResolver.Instance,
+            AttributeFormatterResolver.Instance,
+            DynamicEnumAsStringResolver.Instance,
+            DynamicGenericResolver.Instance,
+            DynamicUnionResolver.Instance,
+            DynamicObjectResolver.Instance,
+            PrimitiveObjectResolver.Instance,
+            StandardResolver.Instance);
+
         var signalRServiceBuilder = services.AddSignalR(hubOptions =>
         {
             hubOptions.MaximumReceiveMessageSize = long.MaxValue;
@@ -136,22 +149,12 @@ public class Startup
             hubOptions.AddFilter<ConcurrencyFilter>();
         }).AddMessagePackProtocol(opt =>
         {
-            var resolver = CompositeResolver.Create(StandardResolverAllowPrivate.Instance,
-                BuiltinResolver.Instance,
-                AttributeFormatterResolver.Instance,
-                // replace enum resolver
-                DynamicEnumAsStringResolver.Instance,
-                DynamicGenericResolver.Instance,
-                DynamicUnionResolver.Instance,
-                DynamicObjectResolver.Instance,
-                PrimitiveObjectResolver.Instance,
-                // final fallback(last priority)
-                StandardResolver.Instance);
-
             opt.SerializerOptions = MessagePackSerializerOptions.Standard
                 .WithCompression(MessagePackCompression.Lz4Block)
-                .WithResolver(resolver);
+                .WithResolver(messagePackResolver);
         });
+        
+        services.AddSingleton<IHubProtocol>(_ => new MareSynchronosShared.Protocols.NoLz4MessagePackHubProtocol(messagePackResolver));
 
         // configure redis for SignalR
         var redisConnection = mareConfig.GetValue(nameof(ServerConfiguration.RedisConnectionString), string.Empty);

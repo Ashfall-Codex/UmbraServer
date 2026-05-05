@@ -32,6 +32,9 @@ public partial class MareHub
 
     private string GetUserAgent() => _contextAccessor.HttpContext?.Request.Headers["User-Agent"].ToString() ?? "null";
 
+    private bool IsFallbackConnection() =>
+        string.Equals(_contextAccessor.HttpContext?.Request.Headers["X-Umbra-Fallback"].ToString(), "1", StringComparison.Ordinal);
+
     private async Task SafeLifecycleStep(string stepName, Func<Task> action)
     {
         try

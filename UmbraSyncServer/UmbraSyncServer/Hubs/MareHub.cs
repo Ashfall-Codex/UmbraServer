@@ -46,6 +46,8 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
     private static readonly ConcurrentDictionary<string, ConnectionMeta> ConnectionMetaByConnectionId = new(StringComparer.Ordinal);
     private readonly record struct ConnectionMeta(DateTime ConnectedAtUtc, string Transport, string Continent);
     private static readonly ConcurrentDictionary<string, string> _userConnections = new(StringComparer.Ordinal);
+    public static IReadOnlyCollection<KeyValuePair<string, string>> GetActiveUserConnections()
+        => _userConnections.ToArray();
 
     public MareHub(MareMetrics mareMetrics,
         IDbContextFactory<MareDbContext> mareDbContextFactory, ILogger<MareHub> logger, SystemInfoService systemInfoService,
@@ -166,7 +168,8 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
             _logger.LogCallWarning(MareHubLogger.Args("UpdatingConnectionId", "Old", previousConnectionId, "New", Context.ConnectionId));
         }
 
-        _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent, "Transport", transport, "UA", GetUserAgent()));
+        var connectionPath = IsFallbackConnection() ? "fallback" : "primary";
+        _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent, "Transport", transport, "Path", connectionPath, "UA", GetUserAgent()));
 
         await SafeLifecycleStep("InitPlayer", () => _pairCacheService.InitPlayer(UserUID)).ConfigureAwait(false);
         await SafeLifecycleStep("UpdateUserOnRedis", () => UpdateUserOnRedis()).ConfigureAwait(false);
@@ -214,11 +217,13 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         var exceptionType = exception?.GetType().Name ?? "null";
         var exceptionMessage = exception?.Message ?? "null";
 
+        var connectionPath = IsFallbackConnection() ? "fallback" : "primary";
         _logger.LogCallInfo(MareHubLogger.Args(
             _contextAccessor.GetIpAddress(),
             Context.ConnectionId,
             UserCharaIdent,
             "Transport", transport,
+            "Path", connectionPath,
             "SessionSec", sessionDurationSec,
             "ExceptionType", exceptionType,
             "ExceptionMessage", exceptionMessage));
