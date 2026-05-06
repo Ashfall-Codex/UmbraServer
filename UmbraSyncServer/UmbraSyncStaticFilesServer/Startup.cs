@@ -135,9 +135,6 @@ public class Startup
                     .WithCompression(MessagePackCompression.Lz4Block)
                     .WithResolver(messagePackResolver);
             });
-            
-            services.AddSingleton<Microsoft.AspNetCore.SignalR.Protocol.IHubProtocol>(_ =>
-                new MareSynchronosShared.Protocols.NoLz4MessagePackHubProtocol(messagePackResolver));
 
             var redisConnection = mareConfig.GetValue(nameof(ServerConfiguration.RedisConnectionString), string.Empty);
             signalRServiceBuilder.AddStackExchangeRedis(redisConnection, options => { });

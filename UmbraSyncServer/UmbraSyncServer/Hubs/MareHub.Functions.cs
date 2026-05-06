@@ -446,4 +446,93 @@ public partial class MareHub
             await UserGroupLeave(groupUserPair, allUserPairs, ident, userUid).ConfigureAwait(false);
         }
     }
+    
+    private const string IndividualPairKey = "Individual";
+    private async Task<Dictionary<string, UserInfo>> GetAllPairInfo(string uid)
+    {
+        // Pairs directs ClientPairs avec leur état miroir (synced si l'autre nous a aussi appairé)
+        var clientPairs = from cp in DbContext.ClientPairs.AsNoTracking().Where(u => u.UserUID == uid)
+                          join cp2 in DbContext.ClientPairs.AsNoTracking().Where(u => u.OtherUserUID == uid)
+                              on new { UserUID = cp.UserUID, OtherUserUID = cp.OtherUserUID }
+                              equals new { UserUID = cp2.OtherUserUID, OtherUserUID = cp2.UserUID }
+                              into joined
+                          from c in joined.DefaultIfEmpty()
+                          where cp.UserUID == uid
+                          select new
+                          {
+                              UserUID = cp.UserUID,
+                              OtherUserUID = cp.OtherUserUID,
+                              Gid = string.Empty,
+                              Synced = c != null
+                          };
+
+        // Pairs implicites via syncshells partagées (toujours bidirectionnels)
+        var groupPairs = from gp in DbContext.GroupPairs.AsNoTracking().Where(u => u.GroupUserUID == uid)
+                         join gp2 in DbContext.GroupPairs.AsNoTracking().Where(u => u.GroupUserUID != uid)
+                             on new { GID = gp.GroupGID } equals new { GID = gp2.GroupGID }
+                         select new
+                         {
+                             UserUID = gp.GroupUserUID,
+                             OtherUserUID = gp2.GroupUserUID,
+                             Gid = Convert.ToString(gp2.GroupGID),
+                             Synced = true
+                         };
+
+        var allPairs = clientPairs.Concat(groupPairs);
+
+        var result = from user in allPairs
+                     join u in DbContext.Users.AsNoTracking() on user.OtherUserUID equals u.UID
+                     join o in DbContext.Permissions.AsNoTracking().Where(u => u.UserUID == uid)
+                        on new { UserUID = user.UserUID, OtherUserUID = user.OtherUserUID }
+                        equals new { UserUID = o.UserUID, OtherUserUID = o.OtherUserUID }
+                        into ownperms
+                     from ownperm in ownperms.DefaultIfEmpty()
+                     join p in DbContext.Permissions.AsNoTracking().Where(u => u.OtherUserUID == uid)
+                        on new { UserUID = user.OtherUserUID, OtherUserUID = user.UserUID }
+                        equals new { UserUID = p.UserUID, OtherUserUID = p.OtherUserUID }
+                        into otherperms
+                     from otherperm in otherperms.DefaultIfEmpty()
+                     where user.UserUID == uid
+                        && u.UID == user.OtherUserUID
+                        && (ownperm == null || (ownperm.UserUID == user.UserUID && ownperm.OtherUserUID == user.OtherUserUID))
+                        && (otherperm == null || (otherperm.OtherUserUID == user.UserUID && otherperm.UserUID == user.OtherUserUID))
+                     select new
+                     {
+                         UserUID = user.UserUID,
+                         OtherUserUID = user.OtherUserUID,
+                         OtherUserAlias = u.Alias,
+                         GID = user.Gid,
+                         Synced = user.Synced,
+                         OwnPermissions = ownperm,
+                         OtherPermissions = otherperm,
+                     };
+
+        var resultList = await result.AsNoTracking().ToListAsync().ConfigureAwait(false);
+
+        return resultList.GroupBy(g => g.OtherUserUID, StringComparer.Ordinal).ToDictionary(g => g.Key, g =>
+        {
+            return new UserInfo(
+                g.First().OtherUserAlias,
+                // IndividuallyPaired : il existe une ligne ClientPairs (GID empty) et celle-ci est syncée
+                g.SingleOrDefault(p => string.IsNullOrEmpty(p.GID))?.Synced ?? false,
+                // IsSynced : au moins un chemin (direct ou syncshell) est bidirectionnel
+                g.Max(p => p.Synced),
+                g.Select(p => string.IsNullOrEmpty(p.GID) ? IndividualPairKey : p.GID).Distinct(StringComparer.Ordinal).ToList(),
+                g.First().OwnPermissions,
+                g.First().OtherPermissions);
+        }, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Vue minimale d'une paire (directe ou via syncshell) côté serveur.
+    /// Utilisée par <see cref="GetAllPairInfo"/> pour matérialiser la sortie unifiée
+    /// avant projection vers les DTOs réseau.
+    /// </summary>
+    public record UserInfo(
+        string? Alias,
+        bool IndividuallyPaired,
+        bool IsSynced,
+        List<string> GIDs,
+        UserPermissionSet? OwnPermissions,
+        UserPermissionSet? OtherPermissions);
 }

@@ -1065,15 +1065,51 @@ public partial class MareHub
     {
         _logger.LogCallInfo();
 
-        var groups = await DbContext.GroupPairs.Include(g => g.Group).Include(g => g.Group.Owner).Where(g => g.GroupUserUID == UserUID).AsNoTracking().ToListAsync().ConfigureAwait(false);
+        // Une seule passe DB : pour chaque syncshell jointe, on charge en parallèle
+        // les flags pinned/mod des membres flaggés et le user count total.
+        // Permet au client de skip GroupsGetUsersInGroup × N au bootstrap.
+        var rows = await (
+            from gp in DbContext.GroupPairs
+                .Include(g => g.Group)
+                .Include(g => g.Group.Owner)
+            where gp.GroupUserUID == UserUID
+            select new
+            {
+                GroupPair = gp,
+                FlaggedUsers = DbContext.GroupPairs
+                    .Where(x => x.GroupGID == gp.GroupGID && (x.IsPinned || x.IsModerator))
+                    .Select(x => new { x.GroupUserUID, x.IsPinned, x.IsModerator })
+                    .ToList(),
+                UserCount = DbContext.GroupPairs.Count(x => x.GroupGID == gp.GroupGID),
+            })
+            .AsNoTracking()
+            .ToListAsync().ConfigureAwait(false);
 
-        return groups.Select(g => new GroupFullInfoDto(g.Group.ToGroupData(), g.Group.Owner.ToUserData(),
-                g.Group.GetGroupPermissions(), g.GetGroupPairPermissions(), g.GetGroupPairUserInfo())
+        return rows.Select(r =>
         {
-            IsTemporary = g.Group.IsTemporary,
-            ExpiresAt = g.Group.ExpiresAt,
-            AutoDetectVisible = g.Group.AutoDetectVisible,
-            PasswordTemporarilyDisabled = g.Group.PasswordTemporarilyDisabled,
+            var pairInfos = new Dictionary<string, GroupUserInfo>(StringComparer.Ordinal);
+            foreach (var f in r.FlaggedUsers)
+            {
+                var info = GroupUserInfo.None;
+                info.SetPinned(f.IsPinned);
+                info.SetModerator(f.IsModerator);
+                pairInfos[f.GroupUserUID] = info;
+            }
+
+            return new GroupFullInfoDto(
+                r.GroupPair.Group.ToGroupData(),
+                r.GroupPair.Group.Owner.ToUserData(),
+                r.GroupPair.Group.GetGroupPermissions(),
+                r.GroupPair.GetGroupPairPermissions(),
+                r.GroupPair.GetGroupPairUserInfo())
+            {
+                IsTemporary = r.GroupPair.Group.IsTemporary,
+                ExpiresAt = r.GroupPair.Group.ExpiresAt,
+                AutoDetectVisible = r.GroupPair.Group.AutoDetectVisible,
+                PasswordTemporarilyDisabled = r.GroupPair.Group.PasswordTemporarilyDisabled,
+                GroupPairUserInfos = pairInfos,
+                GroupUserCount = r.UserCount,
+            };
         }).ToList();
     }
 

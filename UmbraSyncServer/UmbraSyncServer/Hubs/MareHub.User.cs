@@ -181,57 +181,36 @@ public partial class MareHub
     {
         _logger.LogCallInfo();
 
-        // Pairs directs (et leur état miroir éventuel)
-        var directPairsQuery =
-            from userToOther in DbContext.ClientPairs.AsNoTracking()
-            join otherToUser in DbContext.ClientPairs.AsNoTracking()
-                on new { user = userToOther.UserUID, other = userToOther.OtherUserUID }
-                equals new { user = otherToUser.OtherUserUID, other = otherToUser.UserUID }
-                into leftJoin
-            from otherEntry in leftJoin.DefaultIfEmpty()
-            where userToOther.UserUID == UserUID
-            select new
-            {
-                userToOther.OtherUserUID,
-                userToOther.OtherUser.Alias,
-                IsSynced = otherEntry != null,
-            };
+        // Vue unifiée pairs directs + pairs implicites via syncshells (1 helper, pas de N+1).
+        var pairs = await GetAllPairInfo(UserUID).ConfigureAwait(false);
 
-        var directPairs = await directPairsQuery.ToListAsync().ConfigureAwait(false);
-
-        // Permissions du caller pour chaque pair direct
-        var directOtherUids = directPairs.Select(p => p.OtherUserUID).ToList();
-        var ownPermissions = await DbContext.Permissions.AsNoTracking()
-            .Where(p => p.UserUID == UserUID && directOtherUids.Contains(p.OtherUserUID))
-            .ToDictionaryAsync(p => p.OtherUserUID, p => p, StringComparer.Ordinal).ConfigureAwait(false);
-
-        // Permissions miroir (l'autre user nous a appairé)
-        var otherPermissions = await DbContext.Permissions.AsNoTracking()
-            .Where(p => p.OtherUserUID == UserUID && directOtherUids.Contains(p.UserUID))
-            .ToDictionaryAsync(p => p.UserUID, p => p, StringComparer.Ordinal).ConfigureAwait(false);
-
-        // GIDs partagés via syncshell (utile pour l'UI)
-        var sharedGroupQuery =
-            from gp1 in DbContext.GroupPairs.AsNoTracking()
-            join gp2 in DbContext.GroupPairs.AsNoTracking() on gp1.GroupGID equals gp2.GroupGID
-            where gp1.GroupUserUID == UserUID && gp2.GroupUserUID != UserUID
-            select new { gp2.GroupUserUID, gp1.GroupGID };
-        var sharedGroups = await sharedGroupQuery.ToListAsync().ConfigureAwait(false);
-        var groupsByOther = sharedGroups.GroupBy(s => s.GroupUserUID, StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.Select(x => x.GroupGID).Distinct(StringComparer.Ordinal).ToList(), StringComparer.Ordinal);
-
-        return directPairs.Select(p =>
+        return pairs.Select(p =>
         {
-            ownPermissions.TryGetValue(p.OtherUserUID, out var ownPerms);
-            otherPermissions.TryGetValue(p.OtherUserUID, out var otherPerms);
-            var ownPerm = ownPerms.ToUserPermissions(setSticky: true);
-            var otherPerm = otherPerms.ToUserPermissions();
-            // Quand on est un OneSided sortant, otherPerm.Paired vaut false même si on a une UserPermissionSet miroir.
-            // ToUserPermissions() met systématiquement Paired=true si perms != null. Il faut donc reset si pas synced.
-            if (!p.IsSynced) otherPerm.SetPaired(false);
-            var status = p.IsSynced ? IndividualPairStatus.Bidirectional : IndividualPairStatus.OneSided;
-            groupsByOther.TryGetValue(p.OtherUserUID, out var gids);
-            return new UserFullPairDto(new UserData(p.OtherUserUID, p.Alias), status, gids ?? [], ownPerm, otherPerm);
+            var info = p.Value;
+
+            // IndividualPairStatus :
+            //  - Bidirectional : pair direct ET l'autre a aussi appairé en direct
+            //  - OneSided     : pair direct mais miroir manquant
+            //  - None         : pair purement via syncshell
+            IndividualPairStatus status;
+            if (info.IndividuallyPaired)
+                status = IndividualPairStatus.Bidirectional;
+            else if (info.GIDs.Contains(IndividualPairKey, StringComparer.Ordinal))
+                status = IndividualPairStatus.OneSided;
+            else
+                status = IndividualPairStatus.None;
+
+            var ownPerm = info.OwnPermissions.ToUserPermissions(setSticky: true);
+            var otherPerm = info.OtherPermissions.ToUserPermissions();
+            // OneSided sortant : l'autre n'a pas appairé en direct. Si une UserPermissionSet miroir
+            // existe (rare), ToUserPermissions met Paired=true par défaut, on force Paired=false ici
+            // pour préserver le contrat client historique.
+            if (status == IndividualPairStatus.OneSided) otherPerm.SetPaired(false);
+
+            // GIDs réseau : on retire la sentinelle interne "Individual", le client n'utilise que les vrais GroupGIDs.
+            var gids = info.GIDs.Where(g => !string.Equals(g, IndividualPairKey, StringComparison.Ordinal)).ToList();
+
+            return new UserFullPairDto(new UserData(p.Key, info.Alias), status, gids, ownPerm, otherPerm);
         }).ToList();
     }
 

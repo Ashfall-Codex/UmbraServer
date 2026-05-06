@@ -83,12 +83,6 @@ public class Startup
                 .WithResolver(messagePackResolver);
         });
 
-        // Protocole MessagePack additionnel sans LZ4 — doit être enregistré sur tous les services
-        // qui partagent le Redis backplane SignalR pour que le pré-encodage fonctionne
-        // pour les clients SlowConnection.
-        services.AddSingleton<Microsoft.AspNetCore.SignalR.Protocol.IHubProtocol>(_ =>
-            new MareSynchronosShared.Protocols.NoLz4MessagePackHubProtocol(messagePackResolver));
-
         // configure redis for SignalR
         var redisConnection = mareConfig.GetValue(nameof(MareConfigurationBase.RedisConnectionString), string.Empty);
         signalRServiceBuilder.AddStackExchangeRedis(redisConnection, options => { });
