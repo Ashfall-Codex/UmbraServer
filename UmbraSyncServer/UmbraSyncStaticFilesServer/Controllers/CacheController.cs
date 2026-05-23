@@ -35,13 +35,24 @@ public class CacheController : ControllerBase
 
         long requestSize = 0;
         var fileList = new List<FileInfo>(request.FileIds.Count);
+        List<string> missing = null;
 
         foreach (var file in request.FileIds)
         {
             var fi = await _cachedFileProvider.GetAndDownloadFile(file);
-            if (fi == null) continue;
+            if (fi == null)
+            {
+                (missing ??= new List<string>()).Add(file);
+                continue;
+            }
             requestSize += fi.Length;
             fileList.Add(fi);
+        }
+
+        if (missing != null)
+        {
+            _logger.LogWarning("Request {requestId} for {user}: {missingCount}/{totalCount} files could not be served (hot/cold/distribution miss): {hashes}",
+                requestId, MareUser, missing.Count, request.FileIds.Count, string.Join(", ", missing));
         }
 
         _fileStatisticsService.LogRequest(requestSize);
