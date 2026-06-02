@@ -211,6 +211,44 @@ public partial class MareHub
         return true;
     }
 
+    [Authorize(Policy = "Identified")]
+    public async Task<bool> GroupChangeAlias(GroupAliasDto dto)
+    {
+        _logger.LogCallInfo(MareHubLogger.Args(dto));
+
+        var (isOwner, group) = await TryValidateOwner(dto.Group.GID).ConfigureAwait(false);
+        if (!isOwner) return false;
+
+        var sanitizedAlias = dto.NewAlias?.Trim();
+        if (string.IsNullOrWhiteSpace(sanitizedAlias)) return false;
+        if (sanitizedAlias.Length > 50) sanitizedAlias = sanitizedAlias[..50];
+
+        // Unicité insensible à la casse, en excluant le groupe courant (même logique que GroupCreate).
+        var aliasExists = await DbContext.Groups
+            .AnyAsync(g => g.GID != group.GID && g.Alias != null && EF.Functions.ILike(g.Alias!, sanitizedAlias))
+            .ConfigureAwait(false);
+        if (aliasExists) return false;
+
+        _logger.LogCallInfo(MareHubLogger.Args(dto, "Success"));
+
+        group.Alias = sanitizedAlias;
+        await DbContext.SaveChangesAsync().ConfigureAwait(false);
+
+        // Rebroadcast l'info groupe à jour à tous les membres (réutilise le canal existant).
+        var groupPairs = await DbContext.GroupPairs.AsNoTracking().Where(p => p.GroupGID == group.GID).Select(p => p.GroupUserUID).ToListAsync().ConfigureAwait(false);
+        await DbContext.Entry(group).Reference(g => g.Owner).LoadAsync().ConfigureAwait(false);
+        await Clients.Users(groupPairs).Client_GroupSendInfo(new GroupInfoDto(group.ToGroupData(), group.Owner.ToUserData(), group.GetGroupPermissions())
+        {
+            IsTemporary = group.IsTemporary,
+            ExpiresAt = group.ExpiresAt,
+            AutoDetectVisible = group.AutoDetectVisible,
+            PasswordTemporarilyDisabled = group.PasswordTemporarilyDisabled,
+            MaxUserCount = Math.Min(group.MaxUserCount > 0 ? group.MaxUserCount : _defaultGroupUserCount, _absoluteMaxGroupUserCount),
+        }).ConfigureAwait(false);
+
+        return true;
+    }
+
     private static int? SanitizeDisplayDuration(int? displayDurationHours)
     {
         if (!displayDurationHours.HasValue) return null;
