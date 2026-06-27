@@ -141,6 +141,10 @@ public class Startup
             hubOptions.EnableDetailedErrors = true;
             hubOptions.MaximumParallelInvocationsPerClient = 10;
             hubOptions.StreamBufferCapacity = 200;
+            // 30 min volontaire : protège les gros transferts MCDF (un upload qui sature l'upstream
+            // peut retarder les keepalives plusieurs minutes ; sinon le serveur coupait la connexion).
+            // Le problème des persos « fantômes » au changement de perso est traité à la source dans
+            // MareHub.OnConnectedAsync (nettoyage proactif de l'ancien ident), pas en raccourcissant ce délai.
             hubOptions.ClientTimeoutInterval = TimeSpan.FromMinutes(30);
             hubOptions.KeepAliveInterval = TimeSpan.FromSeconds(5);
             hubOptions.HandshakeTimeout = TimeSpan.FromSeconds(30);

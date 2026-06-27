@@ -171,8 +171,28 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         var connectionPath = IsFallbackConnection() ? "fallback" : "primary";
         _logger.LogCallInfo(MareHubLogger.Args(_contextAccessor.GetIpAddress(), Context.ConnectionId, UserCharaIdent, "Transport", transport, "Path", connectionPath, "UA", GetUserAgent()));
 
+        // Anti-fantôme : détection d'un changement de personnage. À ce stade UID:{uid} contient encore
+        // l'ANCIEN ident (UpdateUserOnRedis le réécrit juste après).
+        string? previousIdent = await GetUserIdent(UserUID).ConfigureAwait(false);
+        bool characterSwitched = !string.IsNullOrEmpty(previousIdent)
+            && !string.Equals(previousIdent, UserCharaIdent, StringComparison.Ordinal);
+
         await SafeLifecycleStep("InitPlayer", () => _pairCacheService.InitPlayer(UserUID)).ConfigureAwait(false);
         await SafeLifecycleStep("UpdateUserOnRedis", () => UpdateUserOnRedis()).ConfigureAwait(false);
+
+        if (characterSwitched)
+        {
+            // L'utilisateur s'est reconnecté sur un AUTRE perso. Sans ça, l'ancien perso resterait
+            // « en ligne » pour les paires jusqu'au timeout de l'ancienne connexion (jusqu'à 30 min).
+            // On purge proactivement l'ancien ident et on notifie offline ; le SendOnline ci-dessous
+            // ré-établit la présence sur le nouveau perso (les paires re-appliquent la nouvelle apparence).
+            await SafeLifecycleStep("CleanupPreviousIdent", async () =>
+            {
+                await _redis.RemoveAsync($"connections:{previousIdent}", StackExchange.Redis.CommandFlags.FireAndForget).ConfigureAwait(false);
+                await _redis.RemoveAsync($"active:{previousIdent}", StackExchange.Redis.CommandFlags.FireAndForget).ConfigureAwait(false);
+                _ = await SendOfflineToAllPairedUsers().ConfigureAwait(false);
+            }).ConfigureAwait(false);
+        }
 
         bool isFirstConnection = false;
         await SafeLifecycleStep("RegisterConnectionInRedis", async () =>
@@ -183,7 +203,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
             isFirstConnection = connections?.Length == 1;
         }).ConfigureAwait(false);
 
-        if (isFirstConnection)
+        if (isFirstConnection || characterSwitched)
         {
             await SafeLifecycleStep("SendOnlineToAllPairedUsers", async () => { _ = await SendOnlineToAllPairedUsers().ConfigureAwait(false); }).ConfigureAwait(false);
         }
@@ -235,14 +255,26 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
             var connections = await _redis.SetMembersAsync<string>($"connections:{UserCharaIdent}").ConfigureAwait(false);
             if (connections == null || connections.Length == 0)
             {
-                var activeConnectionId = await _redis.GetAsync<string>($"active:{UserCharaIdent}").ConfigureAwait(false);
-                if (string.IsNullOrEmpty(activeConnectionId) || string.Equals(activeConnectionId, Context.ConnectionId, StringComparison.Ordinal))
+                // Anti-fantôme (garde-fou) : si le UID est désormais en ligne sous un AUTRE ident
+                // (changement de perso), NE PAS envoyer offline — l'utilisateur est toujours connecté
+                // (sur le nouveau perso). Empêche un offline tardif de l'ancienne connexion qui
+                // masquerait le perso courant. UID:{uid} est maintenu vivant par la connexion active.
+                var currentIdent = await GetUserIdent(UserUID).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(currentIdent) && !string.Equals(currentIdent, UserCharaIdent, StringComparison.Ordinal))
                 {
-                    shouldCleanup = true;
+                    _logger.LogCallInfo(MareHubLogger.Args("SkipOffline_CharacterSwitched", Context.ConnectionId, "Old", UserCharaIdent, "Current", currentIdent));
                 }
                 else
                 {
-                    _logger.LogCallWarning(MareHubLogger.Args("ObsoleteConnectionId", Context.ConnectionId, "Active", activeConnectionId));
+                    var activeConnectionId = await _redis.GetAsync<string>($"active:{UserCharaIdent}").ConfigureAwait(false);
+                    if (string.IsNullOrEmpty(activeConnectionId) || string.Equals(activeConnectionId, Context.ConnectionId, StringComparison.Ordinal))
+                    {
+                        shouldCleanup = true;
+                    }
+                    else
+                    {
+                        _logger.LogCallWarning(MareHubLogger.Args("ObsoleteConnectionId", Context.ConnectionId, "Active", activeConnectionId));
+                    }
                 }
             }
         }).ConfigureAwait(false);
