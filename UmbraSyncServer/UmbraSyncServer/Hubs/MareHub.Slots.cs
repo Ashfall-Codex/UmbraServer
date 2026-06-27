@@ -40,7 +40,6 @@ public partial class MareHub
             .AsNoTracking()
             .Where(s => s.ServerId == serverId
                      && s.TerritoryId == territoryId
-                     && s.DivisionId == divisionId
                      && s.WardId == wardId)
             .ToListAsync()
             .ConfigureAwait(false);

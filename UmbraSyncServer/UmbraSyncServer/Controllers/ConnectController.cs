@@ -4,7 +4,11 @@ using MareSynchronosShared.Models;
 using MareSynchronosShared.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using UmbraSync.API.Data;
+using UmbraSync.API.Dto.User;
+using UmbraSync.API.SignalR;
 
 namespace MareSynchronosServer.Controllers;
 
@@ -16,12 +20,58 @@ public sealed class ConnectController : ControllerBase
     private readonly ConnectClient _connect;
     private readonly MareDbContext _db;
     private readonly ILogger<ConnectController> _logger;
+    private readonly IHubContext<Hubs.MareHub, IMareHub> _hub;
 
-    public ConnectController(ConnectClient connect, MareDbContext db, ILogger<ConnectController> logger)
+    public ConnectController(ConnectClient connect, MareDbContext db, ILogger<ConnectController> logger,
+        IHubContext<Hubs.MareHub, IMareHub> hub)
     {
         _connect = connect;
         _db = db;
         _logger = logger;
+        _hub = hub;
+    }
+
+    /// <summary>
+    /// Notifie en temps réel le joueur (et ses paires) qu'un profil RP a été modifié depuis
+    /// Ashfall Connect, via le callback standard Client_UserUpdateProfile : les clients en jeu
+    /// invalident leur cache de profil et rechargeront la version à jour au prochain affichage.
+    /// Best effort : un échec de notification ne fait jamais échouer l'écriture du profil.
+    /// </summary>
+    private async Task NotifyProfileUpdatedAsync(string uid, CancellationToken ct)
+    {
+        try
+        {
+            // Paires directes (ceux qui ont ce joueur dans leur liste). L'invalidation de cache
+            // étant inoffensive, on ne filtre ni les pauses ni les permissions.
+            var directPairs = await _db.ClientPairs.AsNoTracking()
+                .Where(p => p.OtherUserUID == uid)
+                .Select(p => p.UserUID)
+                .ToListAsync(ct);
+
+            // Membres des syncshells du joueur.
+            var groupIds = await _db.GroupPairs.AsNoTracking()
+                .Where(gp => gp.GroupUserUID == uid)
+                .Select(gp => gp.GroupGID)
+                .ToListAsync(ct);
+            var groupMembers = groupIds.Count == 0
+                ? new List<string>()
+                : await _db.GroupPairs.AsNoTracking()
+                    .Where(gp => groupIds.Contains(gp.GroupGID) && gp.GroupUserUID != uid)
+                    .Select(gp => gp.GroupUserUID)
+                    .ToListAsync(ct);
+
+            var dto = new UserDto(new UserData(uid));
+            var targets = directPairs.Concat(groupMembers).Distinct(StringComparer.Ordinal).ToList();
+            if (targets.Count > 0)
+            {
+                await _hub.Clients.Users(targets).Client_UserUpdateProfile(dto);
+            }
+            await _hub.Clients.User(uid).Client_UserUpdateProfile(dto);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Notification de mise à jour de profil Connect échouée pour {uid}", uid);
+        }
     }
 
     [HttpGet("link-status/{code}")]
@@ -239,6 +289,7 @@ public sealed class ConnectController : ControllerBase
         profile.RpLevel = body.RpLevel;
 
         await _db.SaveChangesAsync(ct);
+        await NotifyProfileUpdatedAsync(uid, ct);
         return NoContent();
 
         static string? TrimOrNull(string? s, int max)
@@ -294,6 +345,7 @@ public sealed class ConnectController : ControllerBase
         profile.EnrichedProfileJson = string.IsNullOrWhiteSpace(body.Json) ? null : body.Json;
         profile.EnrichedProfileVisibility = visibility;
         await _db.SaveChangesAsync(ct);
+        await NotifyProfileUpdatedAsync(uid, ct);
         return NoContent();
     }
 
