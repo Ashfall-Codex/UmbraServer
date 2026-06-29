@@ -68,7 +68,7 @@ public sealed class ConcurrencyFilter : IHubFilter, IDisposable
         {
             PermitLimit = newLimit,
             QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-            QueueLimit = newLimit * 50,
+            QueueLimit = newLimit * 100,
         });
 
         if (oldLimit != 0)

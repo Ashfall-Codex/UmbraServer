@@ -137,7 +137,12 @@ public class Startup
 
         var signalRServiceBuilder = services.AddSignalR(hubOptions =>
         {
-            hubOptions.MaximumReceiveMessageSize = long.MaxValue;
+            // Plafonné à 100 MB (= ApplicationMaxBufferSize/TransportMaxBufferSize, voir MapHub) :
+            // au-delà un message ne peut de toute façon pas transiter. Borne la mémoire qu'un push
+            // surdimensionné (bug/abus) ou une file de pushs (cf. QueueLimit du ConcurrencyFilter)
+            // peut épingler. Les CharaData (métadonnées + glamour/customize) sont très en-deçà, et
+            // les fichiers MCDF passent par le static files server, pas par le hub.
+            hubOptions.MaximumReceiveMessageSize = 100 * 1024 * 1024;
             hubOptions.EnableDetailedErrors = true;
             hubOptions.MaximumParallelInvocationsPerClient = 10;
             hubOptions.StreamBufferCapacity = 200;

@@ -464,6 +464,15 @@ public partial class MareHub
         {
             _logger.LogCallWarning(MareHubLogger.Args("no_recipients", "requested", recipientUids.Count));
         }
+        
+        try
+        {
+            await UpdateUserOnRedis().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCallWarning(MareHubLogger.Args("presence_refresh_failed", ex.Message));
+        }
 
         await Clients.Users(validRecipients).Client_UserReceiveCharacterData(
             new OnlineUserCharaDataDto(new UserData(UserUID), dto.CharaData)).ConfigureAwait(false);

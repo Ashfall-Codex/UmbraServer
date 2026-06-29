@@ -1147,6 +1147,7 @@ public partial class MareHub
                 PasswordTemporarilyDisabled = r.GroupPair.Group.PasswordTemporarilyDisabled,
                 GroupPairUserInfos = pairInfos,
                 GroupUserCount = r.UserCount,
+                MaxUserCount = Math.Min(r.GroupPair.Group.MaxUserCount > 0 ? r.GroupPair.Group.MaxUserCount : _defaultGroupUserCount, _absoluteMaxGroupUserCount),
             };
         }).ToList();
     }

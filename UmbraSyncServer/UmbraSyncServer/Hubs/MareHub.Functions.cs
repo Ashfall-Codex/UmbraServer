@@ -345,10 +345,12 @@ public partial class MareHub
 
         return (true, groupPair);
     }
+    
+    private static readonly TimeSpan UserPresenceTtl = TimeSpan.FromSeconds(120);
 
     private async Task UpdateUserOnRedis()
     {
-        await _redis.AddAsync("UID:" + UserUID, UserCharaIdent, TimeSpan.FromSeconds(60), StackExchange.Redis.When.Always, StackExchange.Redis.CommandFlags.FireAndForget).ConfigureAwait(false);
+        await _redis.AddAsync("UID:" + UserUID, UserCharaIdent, UserPresenceTtl, StackExchange.Redis.When.Always, StackExchange.Redis.CommandFlags.FireAndForget).ConfigureAwait(false);
     }
 
     private async Task UserGroupLeave(GroupPair groupUserPair, List<PausedEntry> allUserPairs, string userIdent, string? uid = null)
