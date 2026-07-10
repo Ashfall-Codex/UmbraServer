@@ -155,7 +155,8 @@ public partial class MareHub
                 && s.TerritoryId == location.TerritoryId
                 && s.DivisionId == location.DivisionId
                 && s.WardId == location.WardId
-                && s.HouseId == location.HouseId)
+                && s.HouseId == location.HouseId
+                && s.RoomId == location.RoomId)
             .OrderByDescending(s => s.CreatedUtc)
             .ToListAsync().ConfigureAwait(false);
 
