@@ -282,15 +282,6 @@ public partial class MareHub
         {
             rpData = await DbContext.CharacterRpProfiles.SingleOrDefaultAsync(u => u.UserUID == user.User.UID && u.CharacterName == user.CharacterName && u.WorldId == user.WorldId).ConfigureAwait(false);
         }
-        else
-        {
-            rpData = await DbContext.CharacterRpProfiles
-                .Where(u => u.UserUID == user.User.UID)
-                .OrderByDescending(u => !string.IsNullOrEmpty(u.RpFirstName) ? 1 : 0)
-                .ThenByDescending(u => u.Id)
-                .FirstOrDefaultAsync()
-                .ConfigureAwait(false);
-        }
 
         if (hrpData == null && rpData == null) return new UserProfileDto(user.User, false, null, null, null);
 

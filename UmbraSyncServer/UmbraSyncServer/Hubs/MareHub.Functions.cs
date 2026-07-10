@@ -346,7 +346,7 @@ public partial class MareHub
         return (true, groupPair);
     }
     
-    private static readonly TimeSpan UserPresenceTtl = TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan UserPresenceTtl = TimeSpan.FromSeconds(60);
 
     private async Task UpdateUserOnRedis()
     {
