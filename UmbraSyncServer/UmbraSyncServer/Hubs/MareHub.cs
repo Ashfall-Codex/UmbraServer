@@ -267,14 +267,11 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
                 else
                 {
                     var activeConnectionId = await _redis.GetAsync<string>($"active:{UserCharaIdent}").ConfigureAwait(false);
-                    if (string.IsNullOrEmpty(activeConnectionId) || string.Equals(activeConnectionId, Context.ConnectionId, StringComparison.Ordinal))
-                    {
-                        shouldCleanup = true;
-                    }
-                    else
+                    if (!string.IsNullOrEmpty(activeConnectionId) && !string.Equals(activeConnectionId, Context.ConnectionId, StringComparison.Ordinal))
                     {
                         _logger.LogCallWarning(MareHubLogger.Args("ObsoleteConnectionId", Context.ConnectionId, "Active", activeConnectionId));
                     }
+                    shouldCleanup = true;
                 }
             }
         }).ConfigureAwait(false);
