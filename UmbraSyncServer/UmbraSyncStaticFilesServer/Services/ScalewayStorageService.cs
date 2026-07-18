@@ -568,12 +568,19 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
         if (!IsEnabled || _s3Client == null) return null;
 
         var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(120));
         try
         {
-            using var resp = await _s3Client.GetObjectAsync(bucketName, GetS3Key(hash), ct).ConfigureAwait(false);
+            using var resp = await _s3Client.GetObjectAsync(bucketName, GetS3Key(hash), cts.Token).ConfigureAwait(false);
             using var ms = new MemoryStream();
-            await resp.ResponseStream.CopyToAsync(ms, ct).ConfigureAwait(false);
+            await resp.ResponseStream.CopyToAsync(ms, cts.Token).ConfigureAwait(false);
             return ms.ToArray();
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning("S3 download timed out for {Hash}", hash);
+            return null;
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -585,12 +592,14 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
             return null;
         }
     }
-   
+
     public async Task<byte[]?> TryDownloadObjectRangeAsync(string hash, int length, CancellationToken ct)
     {
         if (!IsEnabled || _s3Client == null) return null;
 
         var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(20));
         try
         {
             var request = new GetObjectRequest
@@ -599,10 +608,15 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
                 Key = GetS3Key(hash),
                 ByteRange = new ByteRange(0, length - 1),
             };
-            using var resp = await _s3Client.GetObjectAsync(request, ct).ConfigureAwait(false);
+            using var resp = await _s3Client.GetObjectAsync(request, cts.Token).ConfigureAwait(false);
             using var ms = new MemoryStream();
-            await resp.ResponseStream.CopyToAsync(ms, ct).ConfigureAwait(false);
+            await resp.ResponseStream.CopyToAsync(ms, cts.Token).ConfigureAwait(false);
             return ms.ToArray();
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning("S3 range download timed out for {Hash}", hash);
+            return null;
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {

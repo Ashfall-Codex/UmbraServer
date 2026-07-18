@@ -43,6 +43,7 @@ public class StaticFilesServerConfiguration : MareConfigurationBase
     public int Bc7ConversionMaxThreads { get; set; } = 0;
     public bool Bc7ConversionFetchFromS3 { get; set; } = true;
     public int Bc7ConversionIoConcurrency { get; set; } = 16;
+    public int Bc7ConversionEncodeConcurrency { get; set; } = 2;
 
     public bool ScalewayEnabled { get; set; } = false;
     [SensitiveConfiguration]
@@ -83,6 +84,7 @@ public class StaticFilesServerConfiguration : MareConfigurationBase
         sb.AppendLine($"{nameof(Bc7ConversionMaxThreads)} => {Bc7ConversionMaxThreads}");
         sb.AppendLine($"{nameof(Bc7ConversionFetchFromS3)} => {Bc7ConversionFetchFromS3}");
         sb.AppendLine($"{nameof(Bc7ConversionIoConcurrency)} => {Bc7ConversionIoConcurrency}");
+        sb.AppendLine($"{nameof(Bc7ConversionEncodeConcurrency)} => {Bc7ConversionEncodeConcurrency}");
         sb.AppendLine($"{nameof(ScalewayEnabled)} => {ScalewayEnabled}");
         sb.AppendLine($"{nameof(ScalewayBucketName)} => {ScalewayBucketName}");
         sb.AppendLine($"{nameof(ScalewayRegion)} => {ScalewayRegion}");
