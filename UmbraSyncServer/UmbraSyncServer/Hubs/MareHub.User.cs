@@ -508,7 +508,10 @@ public partial class MareHub
                 parameters[i * 2] = list[i].Key;
                 parameters[i * 2 + 1] = (int)list[i].Value;
             }
-            sb.Append(" ON CONFLICT (source_hash) DO NOTHING;");
+            var normalRole = (int)Bc7TextureRole.Normal;
+            sb.Append(" ON CONFLICT (source_hash) DO UPDATE SET role = ").Append(normalRole).Append(", updated_at = now()")
+              .Append(" WHERE EXCLUDED.role = ").Append(normalRole)
+              .Append(" AND file_bc7_conversions.role <> ").Append(normalRole).Append(';');
 
             await db.Database.ExecuteSqlRawAsync(sb.ToString(), parameters).ConfigureAwait(false);
         }

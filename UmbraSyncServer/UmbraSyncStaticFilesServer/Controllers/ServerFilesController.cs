@@ -88,7 +88,7 @@ public class ServerFilesController : ControllerBase
         var bc7Conversions = await _mareDbContext.FileBc7Conversions
             .AsNoTracking()
             .Where(c => requested.Contains(c.SourceHash))
-            .Select(c => new { c.SourceHash, c.State, c.AlternateHash })
+            .Select(c => new { c.SourceHash, c.State, c.AlternateHash, c.Role })
             .ToListAsync().ConfigureAwait(false);
         var convDict = bc7Conversions.ToDictionary(c => c.SourceHash, c => c, StringComparer.OrdinalIgnoreCase);
 
@@ -177,7 +177,13 @@ public class ServerFilesController : ControllerBase
             bool willNotBeCompressed = false;
             if (forbiddenFile == null && convDict.TryGetValue(hash, out var conv))
             {
-                if (conv.State == Bc7ConversionState.Converted && conv.AlternateHash != null
+                // Garde-fou Yukiara : ne jamais servir d'alternate BC7 pour une normal map, même si un blob a été
+                // généré en aveugle lors du backfill historique (rôle inconnu à l'époque). La sécurité vit ici.
+                if (conv.Role == Bc7TextureRole.Normal)
+                {
+                    willNotBeCompressed = true;
+                }
+                else if (conv.State == Bc7ConversionState.Converted && conv.AlternateHash != null
                     && altDict.TryGetValue(conv.AlternateHash, out var altInfo) && altInfo.Size > 0)
                 {
                     altDto = new DownloadFileDto
