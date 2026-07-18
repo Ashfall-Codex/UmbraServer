@@ -15,6 +15,7 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
     private readonly IConfigurationService<StaticFilesServerConfiguration> _config;
     private readonly ILogger<Bc7ConversionService> _logger;
     private readonly IServiceProvider _services;
+    private readonly ScalewayStorageService _scaleway;
     private readonly CancellationTokenSource _cts = new();
     private Task? _workerTask;
     private bool _disposed;
@@ -32,11 +33,13 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
     public Bc7ConversionService(
         IConfigurationService<StaticFilesServerConfiguration> config,
         ILogger<Bc7ConversionService> logger,
-        IServiceProvider services)
+        IServiceProvider services,
+        ScalewayStorageService scaleway)
     {
         _config = config;
         _logger = logger;
         _services = services;
+        _scaleway = scaleway;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -155,17 +158,27 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
             return Bc7ConversionState.Skipped;
         }
 
+        // Les blobs (disque comme S3) sont en LZ4 : on récupère le blob compressé puis on le décompresse.
         var fi = FilePathUtil.GetFileInfoForHash(writeDir, sourceHash)
                  ?? FilePathUtil.GetFileInfoForHash(hotDir, sourceHash);
-        if (fi == null)
+        byte[] rawTex;
+        if (fi != null)
         {
-            _logger.LogWarning("BC7: source blob {Hash} not found on disk", sourceHash);
-            await SetStateAsync(db, sourceHash, Bc7ConversionState.Failed, null, ct).ConfigureAwait(false);
-            return Bc7ConversionState.Failed;
+            rawTex = DecompressLz4(fi.FullName);
         }
-
-        // Les blobs sur disque sont en LZ4 : décompresser pour obtenir le .tex brut.
-        byte[] rawTex = DecompressLz4(fi.FullName);
+        else
+        {
+            // Blob évincé du disque local (nœud edge / cache chaud) : fallback S3 si autorisé.
+            var fetchFromS3 = _config.GetValueOrDefault(nameof(StaticFilesServerConfiguration.Bc7ConversionFetchFromS3), true);
+            var lz4 = fetchFromS3 ? await _scaleway.TryDownloadObjectAsync(sourceHash, ct).ConfigureAwait(false) : null;
+            if (lz4 == null)
+            {
+                _logger.LogWarning("BC7: source blob {Hash} not found (disk{S3})", sourceHash, fetchFromS3 ? "+S3" : "");
+                await SetStateAsync(db, sourceHash, Bc7ConversionState.Failed, null, ct).ConfigureAwait(false);
+                return Bc7ConversionState.Failed;
+            }
+            rawTex = DecompressLz4Bytes(lz4);
+        }
 
         var result = TexTranscoder.TryTranscodeToBc7(rawTex, out var bc7Tex, maxThreads);
         if (result != TexTranscodeResult.Converted)
@@ -231,6 +244,15 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var dec = LZ4Stream.Decode(fs, extraMemory: 0, leaveOpen: false);
+        using var ms = new MemoryStream();
+        dec.CopyTo(ms);
+        return ms.ToArray();
+    }
+
+    private static byte[] DecompressLz4Bytes(byte[] compressed)
+    {
+        using var src = new MemoryStream(compressed);
+        using var dec = LZ4Stream.Decode(src, extraMemory: 0, leaveOpen: false);
         using var ms = new MemoryStream();
         dec.CopyTo(ms);
         return ms.ToArray();

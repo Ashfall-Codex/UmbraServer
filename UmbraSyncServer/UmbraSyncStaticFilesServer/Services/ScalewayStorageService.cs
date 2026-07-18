@@ -563,6 +563,29 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
         return $"{hash[0]}/{hash}";
     }
 
+   public async Task<byte[]?> TryDownloadObjectAsync(string hash, CancellationToken ct)
+    {
+        if (!IsEnabled || _s3Client == null) return null;
+
+        var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
+        try
+        {
+            using var resp = await _s3Client.GetObjectAsync(bucketName, GetS3Key(hash), ct).ConfigureAwait(false);
+            using var ms = new MemoryStream();
+            await resp.ResponseStream.CopyToAsync(ms, ct).ConfigureAwait(false);
+            return ms.ToArray();
+        }
+        catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "S3 download failed for {Hash}", hash);
+            return null;
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
