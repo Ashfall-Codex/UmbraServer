@@ -585,6 +585,35 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
             return null;
         }
     }
+   
+    public async Task<byte[]?> TryDownloadObjectRangeAsync(string hash, int length, CancellationToken ct)
+    {
+        if (!IsEnabled || _s3Client == null) return null;
+
+        var bucketName = _config.GetValue<string>(nameof(StaticFilesServerConfiguration.ScalewayBucketName));
+        try
+        {
+            var request = new GetObjectRequest
+            {
+                BucketName = bucketName,
+                Key = GetS3Key(hash),
+                ByteRange = new ByteRange(0, length - 1),
+            };
+            using var resp = await _s3Client.GetObjectAsync(request, ct).ConfigureAwait(false);
+            using var ms = new MemoryStream();
+            await resp.ResponseStream.CopyToAsync(ms, ct).ConfigureAwait(false);
+            return ms.ToArray();
+        }
+        catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "S3 range download failed for {Hash}", hash);
+            return null;
+        }
+    }
 
     public void Dispose()
     {

@@ -35,6 +35,22 @@ public static class TexTranscoder
     private const uint FormatA8R8G8B8 = 0x1450;
     private const uint FormatX8R8G8B8 = 0x1451;
 
+    public enum TexPeekResult
+    {
+        Convertible,
+        NotConvertible,
+        Unknown,
+    }
+    
+    public static TexPeekResult PeekFormat(ReadOnlySpan<byte> texHeader)
+    {
+        if (texHeader.Length < 12) return TexPeekResult.Unknown;
+        uint format = BinaryPrimitives.ReadUInt32LittleEndian(texHeader[4..]);
+        if (IsBlockCompressed(format)) return TexPeekResult.NotConvertible;
+        if (format == FormatA8R8G8B8 || format == FormatX8R8G8B8) return TexPeekResult.Convertible;
+        return TexPeekResult.NotConvertible;
+    }
+
     public static TexTranscodeResult TryTranscodeToBc7(byte[] tex, out byte[] result, int maxThreads = 0)
     {
         result = [];

@@ -99,22 +99,28 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
 
     private async Task<int> ConvertBatchAsync(CancellationToken ct)
     {
-        using var scope = _services.CreateScope();
-        using var db = scope.ServiceProvider.GetRequiredService<MareDbContext>();
-
         var batchSize = _config.GetValueOrDefault(nameof(StaticFilesServerConfiguration.Bc7ConversionBatchSize), 25);
+        int ioConcurrency = Math.Max(1, _config.GetValueOrDefault(nameof(StaticFilesServerConfiguration.Bc7ConversionIoConcurrency), 16));
+        int pollSize = Math.Max(batchSize, ioConcurrency * 4);
 
-        var pending = await db.FileBc7Conversions
-            .Where(c => c.State == Bc7ConversionState.Pending)
-            .OrderBy(c => c.UpdatedAt)
-            .Take(batchSize)
-            .Select(c => new { c.SourceHash, c.Role })
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        List<(string SourceHash, Bc7TextureRole Role)> pending;
+        using (var pollScope = _services.CreateScope())
+        using (var pollDb = pollScope.ServiceProvider.GetRequiredService<MareDbContext>())
+        {
+            pending = (await pollDb.FileBc7Conversions
+                .Where(c => c.State == Bc7ConversionState.Pending)
+                .OrderBy(c => c.UpdatedAt)
+                .Take(pollSize)
+                .Select(c => new { c.SourceHash, c.Role })
+                .ToListAsync(ct)
+                .ConfigureAwait(false))
+                .Select(c => (c.SourceHash, c.Role))
+                .ToList();
+        }
 
         if (pending.Count == 0) return 0;
 
-        _logger.LogInformation("BC7: {Count} textures to convert", pending.Count);
+        _logger.LogInformation("BC7: {Count} textures to process", pending.Count);
 
         var writeDir = WriteDirectory;
         var hotDir = HotDirectory;
@@ -123,34 +129,49 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
         int maxThreads = configThreads > 0 ? configThreads : Math.Max(1, Environment.ProcessorCount / 2);
         int converted = 0, skipped = 0, failed = 0;
 
-        // Séquentiel : l'encodage BC7 est CPU-lourd et le DbContext n'est pas thread-safe.
-        foreach (var item in pending)
+        // I/O (fetch S3 + peek header) en parallèle ; l'encodage BC7 (CPU) reste sérialisé via encodeGate.
+        using var ioGate = new SemaphoreSlim(ioConcurrency);
+        using var encodeGate = new SemaphoreSlim(1);
+
+        var tasks = pending.Select(async item =>
         {
-            ct.ThrowIfCancellationRequested();
+            await ioGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                var outcome = await ConvertOneAsync(db, item.SourceHash, item.Role, writeDir, hotDir, maxThreads, ct).ConfigureAwait(false);
+                var outcome = await ConvertOneAsync(item.SourceHash, item.Role, writeDir, hotDir, maxThreads, encodeGate, ct).ConfigureAwait(false);
                 switch (outcome)
                 {
-                    case Bc7ConversionState.Converted: converted++; break;
-                    case Bc7ConversionState.Skipped: skipped++; break;
-                    default: failed++; break;
+                    case Bc7ConversionState.Converted: Interlocked.Increment(ref converted); break;
+                    case Bc7ConversionState.Skipped: Interlocked.Increment(ref skipped); break;
+                    default: Interlocked.Increment(ref failed); break;
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogWarning(ex, "BC7: conversion failed for {Hash}", item.SourceHash);
-                await SetStateAsync(db, item.SourceHash, Bc7ConversionState.Failed, null, ct).ConfigureAwait(false);
-                failed++;
+                await MarkFailedAsync(item.SourceHash, ct).ConfigureAwait(false);
+                Interlocked.Increment(ref failed);
             }
-        }
+            finally
+            {
+                ioGate.Release();
+            }
+        });
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
 
         _logger.LogInformation("BC7 batch: {Converted} converted, {Skipped} skipped, {Failed} failed", converted, skipped, failed);
         return pending.Count;
     }
 
-    private async Task<Bc7ConversionState> ConvertOneAsync(MareDbContext db, string sourceHash, Bc7TextureRole role, string writeDir, string hotDir, int maxThreads, CancellationToken ct)
+    private const int PeekRangeBytes = 16384;
+
+    private async Task<Bc7ConversionState> ConvertOneAsync(string sourceHash, Bc7TextureRole role, string writeDir, string hotDir, int maxThreads, SemaphoreSlim encodeGate, CancellationToken ct)
     {
+        // Chaque item a son propre scope DB (traitement parallèle : DbContext non thread-safe).
+        using var scope = _services.CreateScope();
+        using var db = scope.ServiceProvider.GetRequiredService<MareDbContext>();
+
         // Règle Yukiara : ne jamais compresser une normal map en BC7 (artefacts sur la peau).
         if (role == Bc7TextureRole.Normal)
         {
@@ -158,9 +179,9 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
             return Bc7ConversionState.Skipped;
         }
 
-        // Les blobs (disque comme S3) sont en LZ4 : on récupère le blob compressé puis on le décompresse.
         var fi = FilePathUtil.GetFileInfoForHash(writeDir, sourceHash)
                  ?? FilePathUtil.GetFileInfoForHash(hotDir, sourceHash);
+
         byte[] rawTex;
         if (fi != null)
         {
@@ -168,22 +189,46 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
         }
         else
         {
-            // Blob évincé du disque local (nœud edge / cache chaud) : fallback S3 si autorisé.
             var fetchFromS3 = _config.GetValueOrDefault(nameof(StaticFilesServerConfiguration.Bc7ConversionFetchFromS3), true);
-            var lz4 = fetchFromS3 ? await _scaleway.TryDownloadObjectAsync(sourceHash, ct).ConfigureAwait(false) : null;
+            if (!fetchFromS3)
+            {
+                await SetStateAsync(db, sourceHash, Bc7ConversionState.Failed, null, ct).ConfigureAwait(false);
+                return Bc7ConversionState.Failed;
+            }
+            
+            var headerLz4 = await _scaleway.TryDownloadObjectRangeAsync(sourceHash, PeekRangeBytes, ct).ConfigureAwait(false);
+            if (headerLz4 != null && TryPeekTexHeader(headerLz4, out var header)
+                && TexTranscoder.PeekFormat(header) == TexTranscoder.TexPeekResult.NotConvertible)
+            {
+                await SetStateAsync(db, sourceHash, Bc7ConversionState.Skipped, null, ct).ConfigureAwait(false);
+                return Bc7ConversionState.Skipped;
+            }
+
+            var lz4 = await _scaleway.TryDownloadObjectAsync(sourceHash, ct).ConfigureAwait(false);
             if (lz4 == null)
             {
-                _logger.LogWarning("BC7: source blob {Hash} not found (disk{S3})", sourceHash, fetchFromS3 ? "+S3" : "");
+                _logger.LogWarning("BC7: source blob {Hash} not found (disk+S3)", sourceHash);
                 await SetStateAsync(db, sourceHash, Bc7ConversionState.Failed, null, ct).ConfigureAwait(false);
                 return Bc7ConversionState.Failed;
             }
             rawTex = DecompressLz4Bytes(lz4);
         }
 
-        var result = TexTranscoder.TryTranscodeToBc7(rawTex, out var bc7Tex, maxThreads);
+        // Encodage BC7 (CPU-lourd, BCnEncoder parallélise en interne) : sérialisé pour ne pas saturer le serveur.
+        byte[] bc7Tex;
+        TexTranscodeResult result;
+        await encodeGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            result = TexTranscoder.TryTranscodeToBc7(rawTex, out bc7Tex, maxThreads);
+        }
+        finally
+        {
+            encodeGate.Release();
+        }
+
         if (result != TexTranscodeResult.Converted)
         {
-            _logger.LogDebug("BC7: {Hash} not convertible ({Reason}), marking skipped", sourceHash, result);
             await SetStateAsync(db, sourceHash, Bc7ConversionState.Skipped, null, ct).ConfigureAwait(false);
             return Bc7ConversionState.Skipped;
         }
@@ -211,22 +256,66 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
             var outPath = FilePathUtil.GetFilePath(writeDir, altHash);
             await File.WriteAllBytesAsync(outPath, compressed, ct).ConfigureAwait(false);
 
-            db.Files.Add(new FileCache
+            try
             {
-                Hash = altHash,
-                UploadDate = DateTime.UtcNow,
-                UploaderUID = uploaderUid,
-                Size = compressed.Length,
-                Uploaded = true,
-                S3Confirmed = false,
-                S3ConfirmedAt = null,
-            });
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                db.Files.Add(new FileCache
+                {
+                    Hash = altHash,
+                    UploadDate = DateTime.UtcNow,
+                    UploaderUID = uploaderUid,
+                    Size = compressed.Length,
+                    Uploaded = true,
+                    S3Confirmed = false,
+                    S3ConfirmedAt = null,
+                });
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            }
+            catch (DbUpdateException)
+            {
+                // Course : un autre thread a inséré le même altHash (textures identiques). Sans gravité.
+            }
         }
 
         await SetStateAsync(db, sourceHash, Bc7ConversionState.Converted, altHash, ct).ConfigureAwait(false);
         _logger.LogInformation("BC7: {Source} -> {Alt}", sourceHash, altHash);
         return Bc7ConversionState.Converted;
+    }
+
+    // Décompresse juste les premiers octets du blob LZ4 partiel pour lire le header .tex (peek).
+    private static bool TryPeekTexHeader(byte[] lz4Partial, out byte[] header)
+    {
+        header = [];
+        try
+        {
+            using var src = new MemoryStream(lz4Partial);
+            using var dec = LZ4Stream.Decode(src, extraMemory: 0, leaveOpen: false);
+            var buf = new byte[80];
+            int total = 0;
+            while (total < buf.Length)
+            {
+                int r = dec.Read(buf, total, buf.Length - total);
+                if (r == 0) break;
+                total += r;
+            }
+            if (total < 12) return false;
+            header = total == buf.Length ? buf : buf[..total];
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task MarkFailedAsync(string sourceHash, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _services.CreateScope();
+            using var db = scope.ServiceProvider.GetRequiredService<MareDbContext>();
+            await SetStateAsync(db, sourceHash, Bc7ConversionState.Failed, null, ct).ConfigureAwait(false);
+        }
+        catch { }
     }
 
     private static async Task SetStateAsync(MareDbContext db, string sourceHash, Bc7ConversionState state, string? altHash, CancellationToken ct)
