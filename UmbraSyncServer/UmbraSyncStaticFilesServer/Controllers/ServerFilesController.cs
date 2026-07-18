@@ -83,6 +83,28 @@ public class ServerFilesController : ControllerBase
         var cacheDict = cacheFiles.ToDictionary(k => k.Hash, k => k.Size, StringComparer.OrdinalIgnoreCase);
         var s3ConfirmedDict = cacheFiles.ToDictionary(k => k.Hash, k => k.S3Confirmed, StringComparer.OrdinalIgnoreCase);
         var forbiddenDict = forbiddenFiles.ToDictionary(f => f.Hash, f => f, StringComparer.OrdinalIgnoreCase);
+
+        // BC7 : alternates compressés disponibles pour les hashes demandés.
+        var bc7Conversions = await _mareDbContext.FileBc7Conversions
+            .AsNoTracking()
+            .Where(c => requested.Contains(c.SourceHash))
+            .Select(c => new { c.SourceHash, c.State, c.AlternateHash })
+            .ToListAsync().ConfigureAwait(false);
+        var convDict = bc7Conversions.ToDictionary(c => c.SourceHash, c => c, StringComparer.OrdinalIgnoreCase);
+
+        var altHashes = bc7Conversions
+            .Where(c => c.State == Bc7ConversionState.Converted && c.AlternateHash != null)
+            .Select(c => c.AlternateHash!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var altFiles = altHashes.Count == 0
+            ? new List<(string Hash, long Size, bool S3Confirmed)>()
+            : (await _mareDbContext.Files.AsNoTracking()
+                .Where(f => altHashes.Contains(f.Hash))
+                .Select(k => new { k.Hash, k.Size, k.S3Confirmed })
+                .ToListAsync().ConfigureAwait(false))
+                .Select(k => (k.Hash, k.Size, k.S3Confirmed)).ToList();
+        var altDict = altFiles.ToDictionary(k => k.Hash, k => (k.Size, k.S3Confirmed), StringComparer.OrdinalIgnoreCase);
         var shardsConfig = _configuration.GetValueOrDefault<ICollection<CdnShardConfiguration>>(
             nameof(StaticFilesServerConfiguration.CdnShardConfiguration),
             Array.Empty<CdnShardConfiguration>());
@@ -102,8 +124,14 @@ public class ServerFilesController : ControllerBase
 
         string BuildDirectDownloadUrl(string hash)
         {
+            if (!s3ConfirmedDict.TryGetValue(hash, out var confirmed)) return string.Empty;
+            return BuildDirectFor(hash, confirmed);
+        }
+
+        string BuildDirectFor(string hash, bool s3Confirmed)
+        {
             if (!_scalewayStorage.IsEnabled) return string.Empty;
-            if (!s3ConfirmedDict.TryGetValue(hash, out var confirmed) || !confirmed) return string.Empty;
+            if (!s3Confirmed) return string.Empty;
             var cdnUrl = DefaultCdnUrlSafely()?.ToString().TrimEnd('/');
             if (string.IsNullOrEmpty(cdnUrl)) return string.Empty;
             return $"{cdnUrl}/{hash[0]}/{hash}";
@@ -145,6 +173,28 @@ public class ServerFilesController : ControllerBase
 
             var exists = cacheDict.TryGetValue(hash, out var size) && size > 0;
 
+            DownloadFileDto? altDto = null;
+            bool willNotBeCompressed = false;
+            if (forbiddenFile == null && convDict.TryGetValue(hash, out var conv))
+            {
+                if (conv.State == Bc7ConversionState.Converted && conv.AlternateHash != null
+                    && altDict.TryGetValue(conv.AlternateHash, out var altInfo) && altInfo.Size > 0)
+                {
+                    altDto = new DownloadFileDto
+                    {
+                        FileExists = true,
+                        Hash = conv.AlternateHash,
+                        Size = altInfo.Size,
+                        Url = baseUrl?.ToString() ?? string.Empty,
+                        DirectDownloadUrl = BuildDirectFor(conv.AlternateHash, altInfo.S3Confirmed),
+                    };
+                }
+                else if (conv.State == Bc7ConversionState.Skipped || conv.State == Bc7ConversionState.Failed)
+                {
+                    willNotBeCompressed = true;
+                }
+            }
+
             response.Add(new DownloadFileDto
             {
                 FileExists = exists,
@@ -154,6 +204,8 @@ public class ServerFilesController : ControllerBase
                 Size = exists ? size : 0,
                 Url = exists ? (baseUrl?.ToString() ?? string.Empty) : string.Empty,
                 DirectDownloadUrl = exists && forbiddenFile == null ? BuildDirectDownloadUrl(hash) : string.Empty,
+                CompressedAlternateFileDownload = altDto,
+                WillNotBeCompressed = willNotBeCompressed,
             });
         }
 

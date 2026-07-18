@@ -87,6 +87,8 @@ public class Startup
         services.AddSingleton<CachedFileProvider>();
         services.AddSingleton<ScalewayStorageService>();
         services.AddHostedService(p => p.GetService<ScalewayStorageService>()!);
+        services.AddSingleton<Bc7ConversionService>();
+        services.AddHostedService(p => p.GetService<Bc7ConversionService>()!);
         services.AddHostedService<FileCleanupService>();
         services.AddSingleton<FileStatisticsService>();
         services.AddSingleton<RequestBlockFileListResultFactory>();

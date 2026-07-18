@@ -8,6 +8,7 @@ using UmbraSync.API.Dto.User;
 using MareSynchronosServer.Utils;
 using MareSynchronosShared.Metrics;
 using MareSynchronosShared.Models;
+using MareSynchronosShared.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
@@ -425,6 +426,25 @@ public partial class MareHub
             + string.Join(Environment.NewLine, invalidFileSwapPaths.Select(p => "Invalid FileSwap Path: " + p)));
         }
 
+        try
+        {
+            var texturesToClassify = new Dictionary<string, Bc7TextureRole>(StringComparer.Ordinal);
+            foreach (var replacement in dto.CharaData.FileReplacements.SelectMany(p => p.Value))
+            {
+                if (string.IsNullOrEmpty(replacement.Hash)) continue;
+                var role = Bc7TextureClassifier.Classify(replacement.GamePaths);
+                if (role == null) continue;
+                if (!texturesToClassify.TryGetValue(replacement.Hash, out var existing) || role.Value == Bc7TextureRole.Normal)
+                    texturesToClassify[replacement.Hash] = role.Value;
+            }
+            if (texturesToClassify.Count > 0)
+                _ = QueueBc7ClassificationAsync(texturesToClassify);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCallWarning(MareHubLogger.Args("bc7_classify_failed", ex.Message));
+        }
+
         var recipientUids = dto.Recipients.Select(r => r.UID).ToList();
 
         bool allCached = await _pairCacheService
@@ -470,6 +490,32 @@ public partial class MareHub
 
         _mareMetrics.IncCounter(MetricsAPI.CounterUserPushData);
         _mareMetrics.IncCounter(MetricsAPI.CounterUserPushDataTo, validRecipients.Count);
+    }
+
+   private async Task QueueBc7ClassificationAsync(Dictionary<string, Bc7TextureRole> textures)
+    {
+        try
+        {
+            await using var db = await _dbContextFactory.CreateDbContextAsync().ConfigureAwait(false);
+
+            var list = textures.ToList();
+            var sb = new StringBuilder("INSERT INTO file_bc7_conversions (source_hash, role, state, updated_at) VALUES ");
+            var parameters = new object[list.Count * 2];
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.Append('(').Append('{').Append(i * 2).Append("}, {").Append(i * 2 + 1).Append("}, 0, now())");
+                parameters[i * 2] = list[i].Key;
+                parameters[i * 2 + 1] = (int)list[i].Value;
+            }
+            sb.Append(" ON CONFLICT (source_hash) DO NOTHING;");
+
+            await db.Database.ExecuteSqlRawAsync(sb.ToString(), parameters).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCallWarning(MareHubLogger.Args("bc7_classify_upsert_failed", ex.Message));
+        }
     }
 
     [Authorize(Policy = "Identified")]

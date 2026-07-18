@@ -36,6 +36,7 @@ public class MareDbContext : DbContext
     public DbSet<Banned> BannedUsers { get; set; }
     public DbSet<ClientPair> ClientPairs { get; set; }
     public DbSet<FileCache> Files { get; set; }
+    public DbSet<FileBc7Conversion> FileBc7Conversions { get; set; }
     public DbSet<ForbiddenUploadEntry> ForbiddenUploadEntries { get; set; }
     public DbSet<GroupBan> GroupBans { get; set; }
     public DbSet<GroupPair> GroupPairs { get; set; }
@@ -123,6 +124,11 @@ public class MareDbContext : DbContext
         mb.Entity<FileCache>().HasIndex(c => c.S3Confirmed);
         mb.Entity<FileCache>().Property(c => c.S3Confirmed).HasDefaultValue(false);
         mb.Entity<FileCache>().Property(c => c.S3ConfirmedAt).HasColumnType("timestamp with time zone");
+        mb.Entity<FileBc7Conversion>().ToTable("file_bc7_conversions");
+        mb.Entity<FileBc7Conversion>().HasKey(c => c.SourceHash);
+        mb.Entity<FileBc7Conversion>().HasIndex(c => c.State);
+        mb.Entity<FileBc7Conversion>().HasIndex(c => c.AlternateHash);
+        mb.Entity<FileBc7Conversion>().Property(c => c.UpdatedAt).HasColumnType("timestamp with time zone");
         mb.Entity<ClientPair>().ToTable("client_pairs");
         mb.Entity<ClientPair>().HasKey(u => new { u.UserUID, u.OtherUserUID });
         mb.Entity<ClientPair>().HasIndex(c => c.UserUID);

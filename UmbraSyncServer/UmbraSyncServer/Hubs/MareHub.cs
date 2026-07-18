@@ -42,6 +42,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
 
     private readonly Lazy<MareDbContext> _dbContextLazy;
     private MareDbContext DbContext => _dbContextLazy.Value;
+    private readonly IDbContextFactory<MareDbContext> _dbContextFactory;
 
     private static readonly ConcurrentDictionary<string, ConnectionMeta> ConnectionMetaByConnectionId = new(StringComparer.Ordinal);
     private readonly record struct ConnectionMeta(DateTime ConnectedAtUtc, string Transport, string Continent);
@@ -72,6 +73,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         _pairCacheService = pairCacheService;
         _autoDetectScheduleCache = autoDetectScheduleCache;
         _logger = new MareHubLogger(this, logger);
+        _dbContextFactory = mareDbContextFactory;
         _dbContextLazy = new Lazy<MareDbContext>(() => mareDbContextFactory.CreateDbContext());
         _broadcastPresenceOnPermissionChange = configuration.GetValueOrDefault(nameof(ServerConfiguration.BroadcastPresenceOnPermissionChange), false);
     }

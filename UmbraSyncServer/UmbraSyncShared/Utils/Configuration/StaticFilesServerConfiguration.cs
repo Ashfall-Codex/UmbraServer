@@ -38,6 +38,10 @@ public class StaticFilesServerConfiguration : MareConfigurationBase
     public bool UseSSI { get; set; } = false;
     public string SSIContentType { get; set; } = "application/x-block-file-list";
 
+    public bool Bc7ConversionEnabled { get; set; } = false;
+    public int Bc7ConversionBatchSize { get; set; } = 25;
+    public int Bc7ConversionMaxThreads { get; set; } = 0;
+
     public bool ScalewayEnabled { get; set; } = false;
     [SensitiveConfiguration]
     public string ScalewayAccessKey { get; set; } = string.Empty;
@@ -72,6 +76,9 @@ public class StaticFilesServerConfiguration : MareConfigurationBase
         sb.AppendLine($"{nameof(DownloadQueueReleaseSeconds)} => {DownloadQueueReleaseSeconds}");
         sb.AppendLine($"{nameof(CdnShardConfiguration)} => {string.Join(", ", CdnShardConfiguration)}");
         sb.AppendLine($"{nameof(UseXAccelRedirect)} => {UseXAccelRedirect}");
+        sb.AppendLine($"{nameof(Bc7ConversionEnabled)} => {Bc7ConversionEnabled}");
+        sb.AppendLine($"{nameof(Bc7ConversionBatchSize)} => {Bc7ConversionBatchSize}");
+        sb.AppendLine($"{nameof(Bc7ConversionMaxThreads)} => {Bc7ConversionMaxThreads}");
         sb.AppendLine($"{nameof(ScalewayEnabled)} => {ScalewayEnabled}");
         sb.AppendLine($"{nameof(ScalewayBucketName)} => {ScalewayBucketName}");
         sb.AppendLine($"{nameof(ScalewayRegion)} => {ScalewayRegion}");
