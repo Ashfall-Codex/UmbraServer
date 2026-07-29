@@ -20,6 +20,8 @@ namespace MareSynchronosServer.Hubs;
 public partial class MareHub
 {
     private static readonly string[] AllowedExtensionsForGamePaths = { ".mdl", ".tex", ".mtrl", ".tmb", ".pap", ".avfx", ".atex", ".sklb", ".eid", ".phyb", ".pbd", ".scd", ".skp", ".shpk", ".kdb" };
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _pushIntegrityChecked = new(StringComparer.Ordinal);
+    private static readonly TimeSpan PushIntegrityTtl = TimeSpan.FromMinutes(30);
 
     [Authorize(Policy = "Identified")]
     public async Task UserAddPair(UserDto dto)
@@ -445,6 +447,8 @@ public partial class MareHub
             _logger.LogCallWarning(MareHubLogger.Args("bc7_classify_failed", ex.Message));
         }
 
+        await WarnOnMissingUploadsAsync(dto).ConfigureAwait(false);
+
         var recipientUids = dto.Recipients.Select(r => r.UID).ToList();
 
         bool allCached = await _pairCacheService
@@ -490,6 +494,47 @@ public partial class MareHub
 
         _mareMetrics.IncCounter(MetricsAPI.CounterUserPushData);
         _mareMetrics.IncCounter(MetricsAPI.CounterUserPushDataTo, validRecipients.Count);
+    }
+    
+    private async Task WarnOnMissingUploadsAsync(UserCharaDataMessageDto dto)
+    {
+        try
+        {
+            var hashes = dto.CharaData.FileReplacements
+                .SelectMany(p => p.Value)
+                .Select(r => r.Hash)
+                .Where(h => !string.IsNullOrEmpty(h))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (hashes.Count == 0) return;
+
+            var now = DateTime.UtcNow;
+            foreach (var stale in _pushIntegrityChecked.Where(kvp => now - kvp.Value > PushIntegrityTtl).Select(kvp => kvp.Key).ToList())
+                _pushIntegrityChecked.TryRemove(stale, out _);
+
+            // Le même jeu de données est repoussé à chaque nouveau pair visible : une seule vérification suffit.
+            if (!_pushIntegrityChecked.TryAdd(UserUID + ":" + dto.CharaData.DataHash.Value, now)) return;
+
+            var uploadedHashes = await DbContext.Files.AsNoTracking()
+                .Where(f => hashes.Contains(f.Hash) && f.Uploaded)
+                .Select(f => f.Hash)
+                .ToListAsync().ConfigureAwait(false);
+
+            var missing = hashes.Except(uploadedHashes, StringComparer.OrdinalIgnoreCase).ToList();
+            if (missing.Count == 0) return;
+
+            _logger.LogCallWarning(MareHubLogger.Args("push_missing_uploads", missing.Count, hashes.Count,
+                string.Join(",", missing.Take(10))));
+
+            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning,
+                $"{missing.Count} fichier(s) de votre apparence sur {hashes.Count} ne sont pas présents sur le serveur : "
+                + "vos partenaires verront des pièces manquantes. Un /usync rescan relancera l'envoi.").ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCallWarning(MareHubLogger.Args("push_integrity_check_failed", ex.Message));
+        }
     }
 
    private async Task QueueBc7ClassificationAsync(Dictionary<string, Bc7TextureRole> textures)

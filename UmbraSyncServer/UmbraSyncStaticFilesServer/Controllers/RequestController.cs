@@ -38,6 +38,7 @@ public class RequestController : ControllerBase
         {
             var hashList = files.ToList();
             var fileList = new List<FileInfo>();
+            var notHot = new List<string>();
 
             foreach (var file in hashList)
             {
@@ -45,6 +46,16 @@ public class RequestController : ControllerBase
                 var fileInfo = await _cachedFileProvider.DownloadFileWhenRequired(file).ConfigureAwait(false);
                 if (fileInfo != null)
                     fileList.Add(fileInfo);
+                else
+                    notHot.Add(file);
+            }
+
+            // Un lot entièrement absent du hot storage signale en général des fichiers jamais uploadés :
+            // le client boucle alors sur des enqueue qui ne servent rien. Trace agrégée pour le corréler.
+            if (notHot.Count == hashList.Count && hashList.Count > 0)
+            {
+                _logger.LogWarning("Enqueue for {user}: none of the {count} requested files are in hot storage: {hashes}",
+                    MareUser, hashList.Count, string.Join(", ", notHot.Take(10)));
             }
 
             _preFetchService.PrefetchFiles(fileList);

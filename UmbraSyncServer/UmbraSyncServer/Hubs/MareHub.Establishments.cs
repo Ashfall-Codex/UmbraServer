@@ -226,9 +226,10 @@ public partial class MareHub
                     var dist = Vector2.Distance(playerPos, new Vector2(e.X.Value, e.Z.Value));
                     return dist <= searchRadius;
                 }
-                // Housing matches are included if territory/ward/division match
                 if (e.LocationType == ModelEstablishmentLocationType.Housing)
-                    return true;
+                {
+                    return request.WardId.HasValue;
+                }
                 return false;
             })
             .OrderBy(e =>

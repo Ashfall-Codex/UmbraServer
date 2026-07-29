@@ -12,19 +12,24 @@ namespace MareSynchronosServer.Hubs;
 
 public partial class MareHub
 {
+    private const float MinSlotRadius = 1f;
+    private const float MaxSlotRadius = 50f;
+
     [Authorize(Policy = "Identified")]
     public async Task<SlotInfoResponseDto?> SlotGetInfo(SlotLocationDto location)
     {
         _logger.LogCallInfo(MareHubLogger.Args(location));
-
+        
         var slot = await DbContext.Slots
             .Include(s => s.Group)
             .AsNoTracking()
             .FirstOrDefaultAsync(s => s.ServerId == location.ServerId
                                    && s.TerritoryId == location.TerritoryId
-                                   && s.DivisionId == location.DivisionId
                                    && s.WardId == location.WardId
-                                   && s.PlotId == location.PlotId)
+                                   && s.PlotId == location.PlotId
+                                   && (s.DivisionId == location.DivisionId
+                                       || s.DivisionId == 0
+                                       || location.DivisionId == 0))
             .ConfigureAwait(false);
 
         return slot?.ToSlotInfoDto();
@@ -120,7 +125,8 @@ public partial class MareHub
             slot.X = request.Location.X;
             slot.Y = request.Location.Y;
             slot.Z = request.Location.Z;
-            slot.Radius = request.Location.Radius;
+            // Un rayon non borné transformerait la syncshell en aspirateur à l'échelle du quartier.
+            slot.Radius = Math.Clamp(request.Location.Radius, MinSlotRadius, MaxSlotRadius);
         }
 
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
