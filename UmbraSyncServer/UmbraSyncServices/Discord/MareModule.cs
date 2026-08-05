@@ -415,6 +415,72 @@ public class MareModule : InteractionModuleBase
         }
     }
 
+    [SlashCommand("broadcast", "OWNER ONLY: annonce écrite dans le chat de tous les joueurs connectés")]
+    public async Task BroadcastToClients([Summary("message", "Message à diffuser")] string message,
+        [Summary("severity", "Importance du message")] MessageSeverity messageType = MessageSeverity.Warning)
+    {
+        _logger.LogInformation("SlashCommand:{userId}:{Method}:{type}", Context.Interaction.User.Id, nameof(BroadcastToClients), messageType);
+
+        var allowedIds = _mareServicesConfiguration.GetValueOrDefault(nameof(ServicesConfiguration.BroadcastAllowedDiscordIds), new List<ulong>());
+        if (allowedIds.Count == 0 || !allowedIds.Contains(Context.Interaction.User.Id))
+        {
+            _logger.LogWarning("Broadcast refusé pour {userId}", Context.Interaction.User.Id);
+            await RespondAsync("No permission", ephemeral: true).ConfigureAwait(false);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            await RespondAsync("Le message ne peut pas être vide", ephemeral: true).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            using HttpClient c = new HttpClient();
+            c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _serverTokenGenerator.Token);
+            var response = await c.PostAsJsonAsync(new Uri(_mareServicesConfiguration.GetValue<Uri>
+                (nameof(ServicesConfiguration.MainServerAddress)), "/msgc/broadcast"), new ClientMessage(messageType, message, string.Empty))
+                .ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                await RespondAsync($"Échec de la diffusion : {response.StatusCode}", ephemeral: true).ConfigureAwait(false);
+                return;
+            }
+
+            var discordChannelForMessages = _mareServicesConfiguration.GetValueOrDefault<ulong?>(nameof(ServicesConfiguration.DiscordChannelForMessages), null);
+            if (discordChannelForMessages != null)
+            {
+                var discordChannel = await Context.Guild.GetChannelAsync(discordChannelForMessages.Value) as IMessageChannel;
+                if (discordChannel != null)
+                {
+                    var embedColor = messageType switch
+                    {
+                        MessageSeverity.Information => Color.Blue,
+                        MessageSeverity.Warning => new Color(255, 255, 0),
+                        MessageSeverity.Error => Color.Red,
+                        _ => Color.Blue
+                    };
+
+                    EmbedBuilder eb = new();
+                    eb.WithTitle("Annonce serveur");
+                    eb.WithColor(embedColor);
+                    eb.WithDescription(message);
+
+                    await discordChannel.SendMessageAsync(embed: eb.Build()).ConfigureAwait(false);
+                }
+            }
+
+            await RespondAsync("Annonce diffusée dans le chat des joueurs connectés", ephemeral: true).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Broadcast failed");
+            await RespondAsync("Échec de la diffusion : " + ex.Message, ephemeral: true).ConfigureAwait(false);
+        }
+    }
+
     //[ModalInteraction("recover_modal:*")]
     public async Task RecoverModal(string? secondaryUid, LodestoneModal modal)
     {

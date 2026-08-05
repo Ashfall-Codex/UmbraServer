@@ -1,4 +1,5 @@
-﻿using UmbraSync.API.SignalR;
+﻿using UmbraSync.API.Dto;
+using UmbraSync.API.SignalR;
 using MareSynchronosServer.Hubs;
 using MareSynchronosShared.Utils;
 using Microsoft.AspNetCore.Authorization;
@@ -39,4 +40,33 @@ public class ClientMessageController : Controller
 
         return Empty;
     }
+
+    /// <summary>
+    /// Annonce diffusée à tous les clients connectés, écrite directement dans le chat du jeu.
+    /// Réservée aux annonces d'exploitation (redémarrage, maintenance) : le contrôle d'accès
+    /// est fait en amont par le bot Discord, cet endpoint reste sur la policy "Internal".
+    /// </summary>
+    [Route("broadcast")]
+    [HttpPost]
+    public async Task<IActionResult> Broadcast([FromBody] ClientMessage msg)
+    {
+        if (msg == null || string.IsNullOrWhiteSpace(msg.Message))
+            return BadRequest("Message is required");
+
+        var message = msg.Message.Trim();
+        if (message.Length > MaxBroadcastLength)
+            message = message[..MaxBroadcastLength];
+
+        _logger.LogInformation("Broadcasting message of severity {severity} to all online users: {message}", msg.Severity, message);
+
+        await _hubContext.Clients.All.Client_ReceiveBroadcast(new BroadcastMessageDto
+        {
+            Severity = msg.Severity,
+            Message = message,
+        }).ConfigureAwait(false);
+
+        return Empty;
+    }
+
+    private const int MaxBroadcastLength = 800;
 }
