@@ -25,8 +25,10 @@ public class HousingScenario
     public byte[] Tag { get; set; } = Array.Empty<byte>();
     public DateTime CreatedUtc { get; set; }
     public DateTime? UpdatedUtc { get; set; }
+    public int ContentRevision { get; set; }
     public ICollection<HousingScenarioAllowedUser> AllowedIndividuals { get; set; } = new HashSet<HousingScenarioAllowedUser>();
     public ICollection<HousingScenarioAllowedGroup> AllowedSyncshells { get; set; } = new HashSet<HousingScenarioAllowedGroup>();
+    public ICollection<HousingScenarioAllowedEditor> AllowedEditors { get; set; } = new HashSet<HousingScenarioAllowedEditor>();
 }
 
 public class HousingScenarioAllowedUser
@@ -43,4 +45,12 @@ public class HousingScenarioAllowedGroup
     public HousingScenario Share { get; set; } = null!;
     [MaxLength(20)]
     public string AllowedGroupGid { get; set; } = string.Empty;
+}
+
+public class HousingScenarioAllowedEditor
+{
+    public Guid ShareId { get; set; }
+    public HousingScenario Share { get; set; } = null!;
+    [MaxLength(10)]
+    public string EditorUid { get; set; } = string.Empty;
 }

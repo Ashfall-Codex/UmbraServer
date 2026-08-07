@@ -65,6 +65,7 @@ public class MareDbContext : DbContext
     public DbSet<HousingScenario> HousingScenarios { get; set; }
     public DbSet<HousingScenarioAllowedUser> HousingScenarioAllowedUsers { get; set; }
     public DbSet<HousingScenarioAllowedGroup> HousingScenarioAllowedGroups { get; set; }
+    public DbSet<HousingScenarioAllowedEditor> HousingScenarioAllowedEditors { get; set; }
     public DbSet<Establishment> Establishments { get; set; }
     public DbSet<EstablishmentEvent> EstablishmentEvents { get; set; }
     public DbSet<WildRpAnnouncement> WildRpAnnouncements { get; set; }
@@ -305,6 +306,7 @@ public class MareDbContext : DbContext
         mb.Entity<HousingScenario>().Property(s => s.UpdatedUtc).HasColumnType("timestamp with time zone");
         mb.Entity<HousingScenario>().HasMany(s => s.AllowedIndividuals).WithOne(a => a.Share).HasForeignKey(a => a.ShareId).OnDelete(DeleteBehavior.Cascade);
         mb.Entity<HousingScenario>().HasMany(s => s.AllowedSyncshells).WithOne(a => a.Share).HasForeignKey(a => a.ShareId).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<HousingScenario>().HasMany(s => s.AllowedEditors).WithOne(a => a.Share).HasForeignKey(a => a.ShareId).OnDelete(DeleteBehavior.Cascade);
 
         mb.Entity<HousingScenarioAllowedUser>().ToTable("housing_scenario_allowed_users");
         mb.Entity<HousingScenarioAllowedUser>().HasKey(u => new { u.ShareId, u.AllowedIndividualUid });
@@ -313,6 +315,10 @@ public class MareDbContext : DbContext
         mb.Entity<HousingScenarioAllowedGroup>().ToTable("housing_scenario_allowed_groups");
         mb.Entity<HousingScenarioAllowedGroup>().HasKey(g => new { g.ShareId, g.AllowedGroupGid });
         mb.Entity<HousingScenarioAllowedGroup>().HasIndex(g => g.AllowedGroupGid);
+
+        mb.Entity<HousingScenarioAllowedEditor>().ToTable("housing_scenario_allowed_editors");
+        mb.Entity<HousingScenarioAllowedEditor>().HasKey(e => new { e.ShareId, e.EditorUid });
+        mb.Entity<HousingScenarioAllowedEditor>().HasIndex(e => e.EditorUid);
     }
 
     private static void ConfigureEstablishmentEntities(ModelBuilder mb)

@@ -14,7 +14,7 @@ namespace MareSynchronosServer.Hubs;
 public partial class MareHub
 {
     [Authorize(Policy = "Identified")]
-    public async Task HousingScenarioUpload(HousingScenarioUploadRequestDto dto)
+    public async Task<HousingScenarioUploadResultDto> HousingScenarioUpload(HousingScenarioUploadRequestDto dto)
     {
         _logger.LogCallInfo(MareHubLogger.Args(dto.ShareId));
 
@@ -32,12 +32,26 @@ public partial class MareHub
         var share = await DbContext.HousingScenarios
             .Include(s => s.AllowedIndividuals)
             .Include(s => s.AllowedSyncshells)
+            .Include(s => s.AllowedEditors)
             .SingleOrDefaultAsync(s => s.Id == dto.ShareId)
             .ConfigureAwait(false);
 
-        if (share != null && !string.Equals(share.OwnerUID, UserUID, StringComparison.Ordinal))
+        // Partage inexistant : c'est une première publication, l'appelant en devient propriétaire.
+        bool isOwner = share == null || string.Equals(share.OwnerUID, UserUID, StringComparison.Ordinal);
+        bool isEditor = share != null && HousingScenarioIsEditor(share);
+        if (!isOwner && !isEditor)
         {
-            return;
+            return new HousingScenarioUploadResultDto { Status = HousingScenarioUploadStatus.Forbidden };
+        }
+        
+        if (share != null && dto.BaseContentRevision.HasValue && dto.BaseContentRevision.Value != share.ContentRevision)
+        {
+            _logger.LogCallWarning(MareHubLogger.Args(dto.ShareId, "content revision conflict"));
+            return new HousingScenarioUploadResultDto
+            {
+                Status = HousingScenarioUploadStatus.Conflict,
+                ContentRevision = share.ContentRevision,
+            };
         }
 
         var now = DateTime.UtcNow;
@@ -53,40 +67,53 @@ public partial class MareHub
         }
 
         share.Description = dto.Description ?? string.Empty;
-        share.ServerId = dto.Location.ServerId;
-        share.MapId = dto.Location.MapId;
-        share.TerritoryId = dto.Location.TerritoryId;
-        share.DivisionId = dto.Location.DivisionId;
-        share.WardId = dto.Location.WardId;
-        share.HouseId = dto.Location.HouseId;
-        share.RoomId = dto.Location.RoomId;
         share.CipherData = dto.CipherData ?? Array.Empty<byte>();
         share.Nonce = dto.Nonce ?? Array.Empty<byte>();
         share.Salt = dto.Salt ?? Array.Empty<byte>();
         share.Tag = dto.Tag ?? Array.Empty<byte>();
         share.UpdatedUtc = now;
-
-        share.AllowedIndividuals.Clear();
-        foreach (var uid in normalizedUsers)
+        share.ContentRevision++;
+        
+        if (isOwner)
         {
-            share.AllowedIndividuals.Add(new HousingScenarioAllowedUser
-            {
-                ShareId = share.Id,
-                AllowedIndividualUid = uid,
-            });
-        }
+            share.ServerId = dto.Location.ServerId;
+            share.MapId = dto.Location.MapId;
+            share.TerritoryId = dto.Location.TerritoryId;
+            share.DivisionId = dto.Location.DivisionId;
+            share.WardId = dto.Location.WardId;
+            share.HouseId = dto.Location.HouseId;
+            share.RoomId = dto.Location.RoomId;
 
-        share.AllowedSyncshells.Clear();
-        foreach (var gid in normalizedGroups)
-        {
-            share.AllowedSyncshells.Add(new HousingScenarioAllowedGroup
+            share.AllowedIndividuals.Clear();
+            foreach (var uid in normalizedUsers)
             {
-                ShareId = share.Id,
-                AllowedGroupGid = gid,
-            });
+                share.AllowedIndividuals.Add(new HousingScenarioAllowedUser
+                {
+                    ShareId = share.Id,
+                    AllowedIndividualUid = uid,
+                });
+            }
+
+            share.AllowedSyncshells.Clear();
+            foreach (var gid in normalizedGroups)
+            {
+                share.AllowedSyncshells.Add(new HousingScenarioAllowedGroup
+                {
+                    ShareId = share.Id,
+                    AllowedGroupGid = gid,
+                });
+            }
+
+            ReplaceHousingScenarioEditors(share, dto.AllowedEditors);
         }
 
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
+
+        return new HousingScenarioUploadResultDto
+        {
+            Status = HousingScenarioUploadStatus.Success,
+            ContentRevision = share.ContentRevision,
+        };
     }
 
     [Authorize(Policy = "Identified")]
@@ -97,6 +124,7 @@ public partial class MareHub
         var share = await DbContext.HousingScenarios
             .Include(s => s.AllowedIndividuals)
             .Include(s => s.AllowedSyncshells)
+            .Include(s => s.AllowedEditors)
             .SingleOrDefaultAsync(s => s.Id == shareId)
             .ConfigureAwait(false);
 
@@ -135,11 +163,12 @@ public partial class MareHub
             .Include(s => s.Owner)
             .Include(s => s.AllowedIndividuals)
             .Include(s => s.AllowedSyncshells)
+            .Include(s => s.AllowedEditors)
             .Where(s => s.OwnerUID == UserUID)
             .OrderByDescending(s => s.CreatedUtc)
             .ToListAsync().ConfigureAwait(false);
 
-        return shares.Select(s => MapHousingScenarioEntryDto(s, true)).ToList();
+        return shares.Select(s => MapHousingScenarioEntryDto(s, true, true)).ToList();
     }
 
     [Authorize(Policy = "Identified")]
@@ -151,6 +180,7 @@ public partial class MareHub
             .Include(s => s.Owner)
             .Include(s => s.AllowedIndividuals)
             .Include(s => s.AllowedSyncshells)
+            .Include(s => s.AllowedEditors)
             .Where(s => s.ServerId == location.ServerId
                 && s.TerritoryId == location.TerritoryId
                 && s.DivisionId == location.DivisionId
@@ -173,7 +203,11 @@ public partial class MareHub
             return HousingScenarioAccessibleToUser(s, userGroups);
         }).ToList();
 
-        return accessible.Select(s => MapHousingScenarioEntryDto(s, string.Equals(s.OwnerUID, UserUID, StringComparison.Ordinal))).ToList();
+        return accessible.Select(s =>
+        {
+            bool isOwner = string.Equals(s.OwnerUID, UserUID, StringComparison.Ordinal);
+            return MapHousingScenarioEntryDto(s, isOwner, isOwner || HousingScenarioIsEditor(s));
+        }).ToList();
     }
 
     [Authorize(Policy = "Identified")]
@@ -181,9 +215,11 @@ public partial class MareHub
     {
         _logger.LogCallInfo(MareHubLogger.Args(dto.ShareId));
 
+        // Réservé au propriétaire : description, autorisations et délégations sont son domaine.
         var share = await DbContext.HousingScenarios
             .Include(s => s.AllowedIndividuals)
             .Include(s => s.AllowedSyncshells)
+            .Include(s => s.AllowedEditors)
             .Include(s => s.Owner)
             .SingleOrDefaultAsync(s => s.Id == dto.ShareId && s.OwnerUID == UserUID)
             .ConfigureAwait(false);
@@ -224,8 +260,10 @@ public partial class MareHub
             });
         }
 
+        ReplaceHousingScenarioEditors(share, dto.AllowedEditors);
+
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
-        return MapHousingScenarioEntryDto(share, true);
+        return MapHousingScenarioEntryDto(share, true, true);
     }
 
     [Authorize(Policy = "Identified")]
@@ -240,8 +278,31 @@ public partial class MareHub
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
         return true;
     }
+    
+    private void ReplaceHousingScenarioEditors(HousingScenario share, List<string>? editors)
+    {
+        var normalized = (editors ?? new List<string>())
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(NormalizeUid)
+            .Where(uid => !string.Equals(uid, share.OwnerUID, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
-    private static HousingScenarioEntryDto MapHousingScenarioEntryDto(HousingScenario share, bool isOwner)
+        share.AllowedEditors.Clear();
+        foreach (var uid in normalized)
+        {
+            share.AllowedEditors.Add(new HousingScenarioAllowedEditor
+            {
+                ShareId = share.Id,
+                EditorUid = uid,
+            });
+        }
+    }
+
+    private bool HousingScenarioIsEditor(HousingScenario share)
+        => share.AllowedEditors.Any(e => string.Equals(e.EditorUid, UserUID, StringComparison.OrdinalIgnoreCase));
+
+    private static HousingScenarioEntryDto MapHousingScenarioEntryDto(HousingScenario share, bool isOwner, bool canEdit)
     {
         return new HousingScenarioEntryDto
         {
@@ -264,6 +325,9 @@ public partial class MareHub
             OwnerAlias = share.Owner?.Alias ?? string.Empty,
             AllowedIndividuals = share.AllowedIndividuals.Select(i => i.AllowedIndividualUid).OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList(),
             AllowedSyncshells = share.AllowedSyncshells.Select(g => g.AllowedGroupGid).OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList(),
+            AllowedEditors = share.AllowedEditors.Select(e => e.EditorUid).OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList(),
+            CanEdit = canEdit,
+            ContentRevision = share.ContentRevision,
         };
     }
 
@@ -278,6 +342,7 @@ public partial class MareHub
 
         bool allowedByUser = share.AllowedIndividuals.Any(i => string.Equals(i.AllowedIndividualUid, UserUID, StringComparison.OrdinalIgnoreCase));
         if (allowedByUser) return true;
+        if (HousingScenarioIsEditor(share)) return true;
 
         if (share.AllowedSyncshells.Count == 0) return false;
         var allowedGroups = share.AllowedSyncshells.Select(g => g.AllowedGroupGid).ToHashSet(StringComparer.OrdinalIgnoreCase);
