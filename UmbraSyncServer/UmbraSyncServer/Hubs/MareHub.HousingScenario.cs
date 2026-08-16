@@ -171,6 +171,29 @@ public partial class MareHub
         return shares.Select(s => MapHousingScenarioEntryDto(s, true, true)).ToList();
     }
 
+    /// <summary>
+    /// Scènes appartenant à d'autres joueurs dont la modification nous a été confiée, quelle que soit
+    /// leur localisation. HousingScenarioGetForLocation ne les révèle que sur place : sans cette
+    /// requête, on ne peut pas savoir qu'une délégation existe ni où aller la chercher.
+    /// </summary>
+    [Authorize(Policy = "Identified")]
+    public async Task<List<HousingScenarioEntryDto>> HousingScenarioGetDelegatedToMe()
+    {
+        _logger.LogCallInfo();
+
+        var shares = await DbContext.HousingScenarios.AsNoTracking()
+            .Include(s => s.Owner)
+            .Include(s => s.AllowedIndividuals)
+            .Include(s => s.AllowedSyncshells)
+            .Include(s => s.AllowedEditors)
+            .Where(s => s.OwnerUID != UserUID
+                && s.AllowedEditors.Any(e => e.EditorUid.ToUpper() == UserUID.ToUpper()))
+            .OrderByDescending(s => s.UpdatedUtc)
+            .ToListAsync().ConfigureAwait(false);
+
+        return shares.Select(s => MapHousingScenarioEntryDto(s, false, true)).ToList();
+    }
+
     [Authorize(Policy = "Identified")]
     public async Task<List<HousingScenarioEntryDto>> HousingScenarioGetForLocation(LocationInfo location)
     {
