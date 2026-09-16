@@ -201,8 +201,8 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         {
             await _redis.SetAddAsync($"connections:{UserCharaIdent}", Context.ConnectionId).ConfigureAwait(false);
             await _redis.AddAsync($"active:{UserCharaIdent}", Context.ConnectionId, expiresIn: TimeSpan.FromMinutes(5)).ConfigureAwait(false);
-            var connections = await _redis.SetMembersAsync<string>($"connections:{UserCharaIdent}").ConfigureAwait(false);
-            isFirstConnection = connections?.Length == 1;
+            var connections = await GetLiveConnectionsAsync(UserCharaIdent).ConfigureAwait(false);
+            isFirstConnection = connections.Length == 1;
         }).ConfigureAwait(false);
 
         if (isFirstConnection || characterSwitched)
@@ -254,8 +254,8 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         await SafeLifecycleStep("RemoveConnectionFromRedis", async () =>
         {
             await _redis.SetRemoveAsync($"connections:{UserCharaIdent}", Context.ConnectionId).ConfigureAwait(false);
-            var connections = await _redis.SetMembersAsync<string>($"connections:{UserCharaIdent}").ConfigureAwait(false);
-            if (connections == null || connections.Length == 0)
+            var connections = await GetLiveConnectionsAsync(UserCharaIdent).ConfigureAwait(false);
+            if (connections.Length == 0)
             {
                 // Anti-fantôme (garde-fou) : si le UID est désormais en ligne sous un AUTRE ident
                 // (changement de perso), NE PAS envoyer offline — l'utilisateur est toujours connecté
@@ -293,5 +293,27 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         _logger.LogCallInfo(MareHubLogger.Args("Disconnect cleanup complete", Context.ConnectionId));
 
         await base.OnDisconnectedAsync(exception).ConfigureAwait(false);
+    }
+
+    // Un redémarrage ou un crash du hub laisse dans connections:{ident} les identifiants de connexions mortes :
+    // l'utilisateur n'est alors plus jamais « première connexion » et ses paires ne le voient jamais passer hors ligne.
+    // Suppose une seule instance du hub : une connexion vivante est forcément connue de ce processus.
+    private async Task<string[]> GetLiveConnectionsAsync(string ident)
+    {
+        var key = $"connections:{ident}";
+        var members = await _redis.SetMembersAsync<string>(key).ConfigureAwait(false) ?? [];
+        var live = new List<string>(members.Length);
+        foreach (var connectionId in members)
+        {
+            if (ConnectionMetaByConnectionId.ContainsKey(connectionId))
+                live.Add(connectionId);
+            else
+                await _redis.SetRemoveAsync(key, connectionId).ConfigureAwait(false);
+        }
+
+        if (live.Count != members.Length)
+            _logger.LogCallInfo(MareHubLogger.Args("PrunedStaleConnections", members.Length - live.Count));
+
+        return [.. live];
     }
 }
