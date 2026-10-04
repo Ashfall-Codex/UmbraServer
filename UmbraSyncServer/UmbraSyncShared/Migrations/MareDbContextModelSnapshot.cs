@@ -1360,6 +1360,12 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("cipher_data");
 
+                    b.Property<long>("CipherLength")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("cipher_length");
+
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_utc");
@@ -1375,6 +1381,12 @@ namespace MareSynchronosServer.Migrations
                     b.Property<DateTime?>("ExpiresAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
+
+                    b.Property<bool>("IsFileBacked")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_file_backed");
 
                     b.Property<byte[]>("Nonce")
                         .HasColumnType("bytea")

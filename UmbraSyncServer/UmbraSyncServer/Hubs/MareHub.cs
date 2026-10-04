@@ -39,6 +39,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
     private readonly int _maxCharaDataByUser;
     private readonly AutoDetectScheduleCache _autoDetectScheduleCache;
     private readonly bool _broadcastPresenceOnPermissionChange;
+    private readonly McdfShareStorage _mcdfStorage;
 
     private readonly Lazy<MareDbContext> _dbContextLazy;
     private MareDbContext DbContext => _dbContextLazy.Value;
@@ -54,9 +55,11 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         IDbContextFactory<MareDbContext> mareDbContextFactory, ILogger<MareHub> logger, SystemInfoService systemInfoService,
         IConfigurationService<ServerConfiguration> configuration, IHttpContextAccessor contextAccessor,
         IRedisDatabase redisDb, GPoseLobbyDistributionService gPoseLobbyDistributionService,
-        AutoDetectScheduleCache autoDetectScheduleCache, OnlineSyncedPairCacheService pairCacheService)
+        AutoDetectScheduleCache autoDetectScheduleCache, OnlineSyncedPairCacheService pairCacheService,
+        McdfShareStorage mcdfStorage)
     {
         _mareMetrics = mareMetrics;
+        _mcdfStorage = mcdfStorage;
         _systemInfoService = systemInfoService;
         _shardName = configuration.GetValue<string>(nameof(ServerConfiguration.ShardName));
         _maxExistingGroupsByUser = configuration.GetValueOrDefault(nameof(ServerConfiguration.MaxExistingGroupsByUser), 3);
