@@ -11,15 +11,16 @@ namespace MareSynchronosServer.Hubs;
 
 public partial class MareHub
 {
-    private async Task<string?> GetUserQuestSession()
+    private async Task<string?> GetUserQuestSession(string uid = null)
     {
-        return await _redis.GetAsync<string>(QuestSessionUserKey).ConfigureAwait(false);
+        return await _redis.GetAsync<string>($"QuestSessionUser:{uid ?? UserUID}").ConfigureAwait(false);
     }
 
-    private async Task<List<string>> GetUsersInQuestSession(string sessionId, bool includeSelf = false)
+    private async Task<List<string>> GetUsersInQuestSession(string sessionId, bool includeSelf = false, string uid = null)
     {
+        uid ??= UserUID;
         var users = await _redis.GetAsync<List<string>>($"QuestSession:{sessionId}").ConfigureAwait(false);
-        return users?.Where(u => includeSelf || !string.Equals(u, UserUID, StringComparison.Ordinal)).ToList() ?? [];
+        return users?.Where(u => includeSelf || !string.Equals(u, uid, StringComparison.Ordinal)).ToList() ?? [];
     }
 
     private async Task<string?> GetQuestSessionHost(string sessionId)
@@ -37,14 +38,15 @@ public partial class MareHub
         await _redis.AddAsync($"QuestSession:{sessionId}", priorUsers.Concat([UserUID])).ConfigureAwait(false);
     }
 
-    private async Task RemoveUserFromQuestSession(string sessionId, List<string> priorUsers)
+    private async Task RemoveUserFromQuestSession(string sessionId, List<string> priorUsers, string uid = null)
     {
-        await _redis.RemoveAsync(QuestSessionUserKey).ConfigureAwait(false);
+        uid ??= UserUID;
+        await _redis.RemoveAsync($"QuestSessionUser:{uid}").ConfigureAwait(false);
 
         _mareMetrics.DecGauge(MetricsAPI.GaugeQuestSessionUsers);
 
         var host = await GetQuestSessionHost(sessionId).ConfigureAwait(false);
-        var isHost = string.Equals(host, UserUID, StringComparison.Ordinal);
+        var isHost = string.Equals(host, uid, StringComparison.Ordinal);
 
         if (priorUsers.Count == 1 || isHost)
         {
@@ -52,22 +54,22 @@ public partial class MareHub
             await _redis.RemoveAsync($"QuestSessionHost:{sessionId}").ConfigureAwait(false);
             _mareMetrics.DecGauge(MetricsAPI.GaugeQuestSessions);
 
-            priorUsers.Remove(UserUID);
+            priorUsers.Remove(uid);
             if (priorUsers.Count > 0)
             {
-                foreach (var uid in priorUsers)
+                foreach (var otherUid in priorUsers)
                 {
-                    await _redis.RemoveAsync($"QuestSessionUser:{uid}").ConfigureAwait(false);
+                    await _redis.RemoveAsync($"QuestSessionUser:{otherUid}").ConfigureAwait(false);
                     _mareMetrics.DecGauge(MetricsAPI.GaugeQuestSessionUsers);
                 }
-                await Clients.Users(priorUsers).Client_QuestSessionLeave(new(UserUID)).ConfigureAwait(false);
+                await Clients.Users(priorUsers).Client_QuestSessionLeave(new(uid)).ConfigureAwait(false);
             }
         }
         else
         {
-            priorUsers.Remove(UserUID);
+            priorUsers.Remove(uid);
             await _redis.AddAsync($"QuestSession:{sessionId}", priorUsers).ConfigureAwait(false);
-            await Clients.Users(priorUsers).Client_QuestSessionLeave(new(UserUID)).ConfigureAwait(false);
+            await Clients.Users(priorUsers).Client_QuestSessionLeave(new(uid)).ConfigureAwait(false);
         }
     }
 
@@ -76,7 +78,7 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task<string> QuestSessionCreate(string questId, string questName)
     {
-        _logger.LogCallInfo(MareHubLogger.Args(questId, questName));
+        _logger.LogCallInfo(MareHubLogger.Args(questId));
         var alreadyInSession = await GetUserQuestSession().ConfigureAwait(false);
         if (!string.IsNullOrEmpty(alreadyInSession))
         {
@@ -101,7 +103,7 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task<List<UserData>> QuestSessionJoin(string sessionId)
     {
-        _logger.LogCallInfo(MareHubLogger.Args(sessionId));
+        _logger.LogCallInfo();
         var existingSessionId = await GetUserQuestSession().ConfigureAwait(false);
         if (!string.IsNullOrEmpty(existingSessionId))
             await QuestSessionLeave().ConfigureAwait(false);

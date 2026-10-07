@@ -33,7 +33,7 @@ public class DiscoveryNotifyController : Controller
         if (string.IsNullOrEmpty(dto.TargetUid)) return BadRequest();
         var name = string.IsNullOrEmpty(dto.FromAlias) ? dto.FromUid : dto.FromAlias;
         var msg = $"Nearby Request: {name} [{dto.FromUid}]";
-        _logger.LogInformation("Discovery notify request to {target} from {from}", dto.TargetUid, name);
+        _logger.LogInformation("Discovery notify request to {target} from {from}", dto.TargetUid, dto.FromUid);
         var client = _hub.Clients.User(dto.TargetUid);
         await client.Client_ReceiveServerMessage(UmbraSync.API.Data.Enum.MessageSeverity.Information, msg);
         await client.Client_ReceivePairRequest(new UmbraSync.API.Dto.User.UserDto(new UmbraSync.API.Data.UserData(dto.FromUid, dto.FromAlias)));
@@ -53,7 +53,7 @@ public class DiscoveryNotifyController : Controller
         if (string.IsNullOrEmpty(dto.TargetUid)) return BadRequest();
         var name = string.IsNullOrEmpty(dto.FromAlias) ? dto.FromUid : dto.FromAlias;
         var msg = $"Nearby Accept: {name} [{dto.FromUid}]";
-        _logger.LogInformation("Discovery notify accept to {target} from {from}", dto.TargetUid, name);
+        _logger.LogInformation("Discovery notify accept to {target} from {from}", dto.TargetUid, dto.FromUid);
         await _hub.Clients.User(dto.TargetUid).Client_ReceiveServerMessage(UmbraSync.API.Data.Enum.MessageSeverity.Information, msg);
         return Accepted();
     }

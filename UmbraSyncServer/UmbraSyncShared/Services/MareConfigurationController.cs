@@ -24,7 +24,7 @@ public class MareConfigurationController<T> : Controller where T : class, IMareC
     public IActionResult GetConfigurationEntry(string key, string defaultValue)
     {
         var result = _config.CurrentValue.SerializeValue(key, defaultValue);
-        _logger.LogInformation("Requested " + key + ", returning:" + result);
+        _logger.LogInformation("Requested {key}", key);
         return Ok(result);
     }
 }

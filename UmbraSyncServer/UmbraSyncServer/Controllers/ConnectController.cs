@@ -637,7 +637,7 @@ public sealed class ConnectController : ControllerBase
         if (message.Length > MaxBroadcastLength)
             message = message[..MaxBroadcastLength];
 
-        _logger.LogInformation("Broadcast Connect ({severity}) : {message}", severity, message);
+        _logger.LogInformation("Broadcast Connect ({severity}), {length} caractères", severity, message.Length);
 
         await _hub.Clients.All.Client_ReceiveBroadcast(new UmbraSync.API.Dto.BroadcastMessageDto
         {

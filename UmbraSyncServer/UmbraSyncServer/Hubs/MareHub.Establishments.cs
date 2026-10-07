@@ -14,7 +14,7 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task<EstablishmentDto?> EstablishmentCreate(EstablishmentCreateRequestDto request)
     {
-        _logger.LogCallInfo(MareHubLogger.Args(request.Name, request.Category));
+        _logger.LogCallInfo(MareHubLogger.Args(request.Category));
 
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 100)
             return null;
@@ -148,7 +148,7 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task<EstablishmentListResponseDto> EstablishmentList(EstablishmentListRequestDto request)
     {
-        _logger.LogCallInfo(MareHubLogger.Args(request.SearchText, request.Category, request.Page));
+        _logger.LogCallInfo(MareHubLogger.Args(request.Category, request.Page));
 
         var query = DbContext.Establishments
             .Include(e => e.Owner)
@@ -197,7 +197,7 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task<EstablishmentNearbyResponseDto> EstablishmentGetNearby(EstablishmentNearbyRequestDto request)
     {
-        _logger.LogCallInfo(MareHubLogger.Args(request.TerritoryId, request.X, request.Z));
+        _logger.LogCallInfo(MareHubLogger.Args(request.TerritoryId));
 
         var query = DbContext.Establishments
             .Include(e => e.Owner)
@@ -290,7 +290,7 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task<EstablishmentEventDto?> EstablishmentEventUpsert(EstablishmentEventUpsertRequestDto request)
     {
-        _logger.LogCallInfo(MareHubLogger.Args(request.EstablishmentId, request.Id, request.Title));
+        _logger.LogCallInfo(MareHubLogger.Args(request.EstablishmentId, request.Id));
 
         if (string.IsNullOrWhiteSpace(request.Title) || request.Title.Length > 100)
             return null;

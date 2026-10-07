@@ -19,7 +19,7 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task GroupBanUser(GroupPairDto dto, string reason)
     {
-        _logger.LogCallInfo(MareHubLogger.Args(dto, reason));
+        _logger.LogCallInfo(MareHubLogger.Args(dto));
 
         var (userHasRights, group) = await TryValidateGroupModeratorOrOwner(dto.Group.GID).ConfigureAwait(false);
         if (!userHasRights) return;
@@ -925,7 +925,7 @@ public partial class MareHub
 
         if (oneTimeInvite != null)
         {
-            _logger.LogCallInfo(MareHubLogger.Args(aliasOrGid, "TempInvite", oneTimeInvite.Invite));
+            _logger.LogCallInfo(MareHubLogger.Args(aliasOrGid, "TempInvite"));
             DbContext.Remove(oneTimeInvite);
         }
 
@@ -1195,6 +1195,7 @@ public partial class MareHub
             BannerImageBase64 = profile.Base64BannerImage,
             IsNsfw = profile.IsNSFW,
             IsDisabled = false,
+            BorderColor = profile.BorderColor,
         };
     }
 
@@ -1265,6 +1266,16 @@ public partial class MareHub
         profile.IsNSFW = dto.IsNsfw;
         profile.IsDisabled = dto.IsDisabled;
 
+        // null = inchangée (un ancien client ne connaît pas ce champ et ne doit pas l'effacer),
+        // chaîne vide = effacer, sinon seule une couleur « #RRGGBB » valide est retenue.
+        if (dto.BorderColor != null)
+        {
+            if (dto.BorderColor.Length == 0)
+                profile.BorderColor = null;
+            else if (System.Text.RegularExpressions.Regex.IsMatch(dto.BorderColor, "^#[0-9A-Fa-f]{6}$"))
+                profile.BorderColor = dto.BorderColor.ToUpperInvariant();
+        }
+
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
 
         // Broadcast to all group members
@@ -1277,6 +1288,7 @@ public partial class MareHub
             BannerImageBase64 = profile.Base64BannerImage,
             IsNsfw = profile.IsNSFW,
             IsDisabled = profile.IsDisabled,
+            BorderColor = profile.BorderColor,
         };
 
         var groupPairs = await DbContext.GroupPairs.AsNoTracking()

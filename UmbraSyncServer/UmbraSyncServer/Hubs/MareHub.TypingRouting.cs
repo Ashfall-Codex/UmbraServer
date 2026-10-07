@@ -63,7 +63,7 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task UserSetTypingStateEx(TypingStateExDto dto)
     {
-        _logger.LogCallInfo(MareHubLogger.Args("TypingEx", dto.IsTyping, dto.Scope, dto.ChannelId, dto.TargetUid));
+        _logger.LogCallInfo(MareHubLogger.Args("TypingEx", dto.IsTyping, dto.Scope));
 
         var sender = await DbContext.Users.AsNoTracking().SingleAsync(u => u.UID == UserUID).ConfigureAwait(false);
 

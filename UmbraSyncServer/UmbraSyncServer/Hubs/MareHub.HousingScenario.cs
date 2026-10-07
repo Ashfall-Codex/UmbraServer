@@ -197,7 +197,7 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task<List<HousingScenarioEntryDto>> HousingScenarioGetForLocation(LocationInfo location)
     {
-        _logger.LogCallInfo(MareHubLogger.Args(location.ServerId, location.TerritoryId, location.WardId, location.HouseId));
+        _logger.LogCallInfo(MareHubLogger.Args(location.ServerId, location.TerritoryId));
 
         var shares = await DbContext.HousingScenarios.AsNoTracking()
             .Include(s => s.Owner)

@@ -8,8 +8,12 @@ namespace MareSynchronosServer.Hubs;
 public partial class MareHub
 {
     private const string EncryptedContentNotice =
-        "Le contenu des partages (MCDF, agencements de logement, scénarios PNJ) est chiffré par votre client avant l'envoi. "
-        + "Le serveur ne détient pas la clé de déchiffrement et ne peut donc exporter que les métadonnées de ces partages.";
+        "Le contenu des partages (MCDF, agencements de logement, scénarios PNJ) est stocké sous forme chiffrée. "
+        + "Cet export n'en fournit que les métadonnées ; le contenu lui-même reste disponible depuis votre client, qui en est la source.";
+
+    private const string TechnicalLogsNotice =
+        "Les journaux techniques du serveur (adresse IP, identifiant de compte, date et heure de connexion) sont conservés 30 jours "
+        + "à des fins de sécurité et ne figurent pas dans cet export.";
 
     private const string ExternalServicesNotice =
         "Ashfall Connect est un service distinct de ce serveur. La fiche RP enrichie et l'identité Discord ou XIVAuth que vous y avez associées "
@@ -35,34 +39,9 @@ public partial class MareHub
         var profile = await DbContext.UserProfileData.AsNoTracking()
             .SingleOrDefaultAsync(p => p.UserUID == UserUID).ConfigureAwait(false);
 
-        var rpProfiles = await DbContext.CharacterRpProfiles.AsNoTracking()
-            .Where(r => r.UserUID == UserUID)
-            .Select(r => new RgpdRpProfileSummaryDto
-            {
-                CharacterName = r.CharacterName,
-                WorldId = r.WorldId,
-                RpFirstName = r.RpFirstName,
-                RpLastName = r.RpLastName,
-                RpTitle = r.RpTitle,
-                RpDescription = r.RpDescription,
-                RpProfilePictureBase64 = r.RpProfilePictureBase64,
-                RpAge = r.RpAge,
-                RpRace = r.RpRace,
-                RpEthnicity = r.RpEthnicity,
-                RpHeight = r.RpHeight,
-                RpBuild = r.RpBuild,
-                RpResidence = r.RpResidence,
-                RpOccupation = r.RpOccupation,
-                RpAffiliation = r.RpAffiliation,
-                RpAlignment = r.RpAlignment,
-                RpAdditionalInfo = r.RpAdditionalInfo,
-                RpNameColor = r.RpNameColor,
-                RpCustomFields = r.RpCustomFields,
-                MoodlesData = r.MoodlesData,
-                EnrichedProfileJson = r.EnrichedProfileJson,
-                EnrichedProfileVisibility = r.EnrichedProfileVisibility,
-            })
-            .ToListAsync().ConfigureAwait(false);
+        var rpProfiles = (await GetRgpdRpProfiles([UserUID]).ConfigureAwait(false))
+            .Select(r => r.Profile)
+            .ToList();
 
         // Les établissements sont matérialisés avant projection : les colonnes text[] (Languages,
         // Tags) ne se projettent pas de façon fiable côté SQL. Le volume est celui d'un seul compte.
@@ -96,6 +75,10 @@ public partial class MareHub
                 LogoImageBase64 = e.LogoImageBase64,
                 BannerImageBase64 = e.BannerImageBase64,
                 ManagerRpProfileId = e.ManagerRpProfileId,
+                X = e.X,
+                Y = e.Y,
+                Z = e.Z,
+                Radius = e.Radius,
                 Events = e.Events.Select(ev => new RgpdEstablishmentEventDto
                 {
                     Id = ev.Id,
@@ -212,10 +195,10 @@ public partial class MareHub
             })
             .ToListAsync().ConfigureAwait(false);
 
-        var hasLodestone = await DbContext.LodeStoneAuth.AnyAsync(l => l.User.UID == UserUID).ConfigureAwait(false);
-        var secondaryCount = await DbContext.Auth.CountAsync(a => a.PrimaryUserUID == UserUID).ConfigureAwait(false);
+        var lodestone = await DbContext.LodeStoneAuth.AsNoTracking()
+            .FirstOrDefaultAsync(l => l.User.UID == UserUID).ConfigureAwait(false);
 
-        return new RgpdDataExportDto
+        var export = new RgpdDataExportDto
         {
             UID = user.UID,
             Alias = user.Alias,
@@ -246,11 +229,200 @@ public partial class MareHub
             WildRpAnnouncements = wildRp,
             UploadedFileCount = uploadedFiles.Count,
             UploadedFiles = uploadedFiles,
-            HasLodestoneAuth = hasLodestone,
-            SecondaryAccountCount = secondaryCount,
+            HasLodestoneAuth = lodestone != null,
             EncryptedContentNotice = EncryptedContentNotice,
             ExternalServicesNotice = ExternalServicesNotice,
+            LinkedDiscordId = lodestone?.DiscordId,
+            TechnicalLogsNotice = TechnicalLogsNotice,
         };
+
+        await AddRgpdAccountRelations(export).ConfigureAwait(false);
+        await AddRgpdSecondaryAccounts(export).ConfigureAwait(false);
+        await AddRgpdGroupBans(export).ConfigureAwait(false);
+        await AddRgpdPermissions(export).ConfigureAwait(false);
+        await AddRgpdScenarioAccessAndReports(export).ConfigureAwait(false);
+
+        return export;
+    }
+
+    private sealed record RgpdRpProfileRow(string UserUID, RgpdRpProfileSummaryDto Profile);
+
+    private async Task<List<RgpdRpProfileRow>> GetRgpdRpProfiles(List<string> uids)
+    {
+        // Projection en mémoire : le volume est celui d'un seul compte et de ses comptes secondaires.
+        var profiles = await DbContext.CharacterRpProfiles.AsNoTracking()
+            .Where(r => uids.Contains(r.UserUID))
+            .ToListAsync().ConfigureAwait(false);
+
+        return profiles
+            .Select(r => new RgpdRpProfileRow(r.UserUID, new RgpdRpProfileSummaryDto
+            {
+                CharacterName = r.CharacterName,
+                WorldId = r.WorldId,
+                RpFirstName = r.RpFirstName,
+                RpLastName = r.RpLastName,
+                RpTitle = r.RpTitle,
+                RpDescription = r.RpDescription,
+                RpProfilePictureBase64 = r.RpProfilePictureBase64,
+                RpAge = r.RpAge,
+                RpRace = r.RpRace,
+                RpEthnicity = r.RpEthnicity,
+                RpHeight = r.RpHeight,
+                RpBuild = r.RpBuild,
+                RpResidence = r.RpResidence,
+                RpOccupation = r.RpOccupation,
+                RpAffiliation = r.RpAffiliation,
+                RpAlignment = r.RpAlignment,
+                RpAdditionalInfo = r.RpAdditionalInfo,
+                RpNameColor = r.RpNameColor,
+                RpCustomFields = r.RpCustomFields,
+                MoodlesData = r.MoodlesData,
+                EnrichedProfileJson = r.EnrichedProfileJson,
+                EnrichedProfileVisibility = r.EnrichedProfileVisibility,
+                IsRpNSFW = r.IsRpNSFW,
+                ChatIcon = r.ChatIcon,
+                RpLevel = r.RpLevel,
+            }))
+            .ToList();
+    }
+
+    private async Task AddRgpdAccountRelations(RgpdDataExportDto export)
+    {
+        export.IsBanned = await DbContext.Auth.AsNoTracking()
+            .AnyAsync(a => a.UserUID == UserUID && a.IsBanned).ConfigureAwait(false);
+
+        export.IncomingPairUIDs = await DbContext.ClientPairs.AsNoTracking()
+            .Where(p => p.OtherUserUID == UserUID)
+            .Select(p => p.UserUID)
+            .ToListAsync().ConfigureAwait(false);
+
+        export.OwnedGroupGIDs = await DbContext.Groups.AsNoTracking()
+            .Where(g => g.OwnerUID == UserUID)
+            .Select(g => g.GID)
+            .ToListAsync().ConfigureAwait(false);
+    }
+
+    private async Task AddRgpdSecondaryAccounts(RgpdDataExportDto export)
+    {
+        var secondaryAuths = await DbContext.Auth.AsNoTracking()
+            .Include(a => a.User)
+            .Where(a => a.PrimaryUserUID == UserUID)
+            .ToListAsync().ConfigureAwait(false);
+
+        var secondaryUIDs = secondaryAuths.Select(a => a.UserUID).Distinct(StringComparer.Ordinal).ToList();
+        var secondaryRpProfiles = secondaryUIDs.Count == 0
+            ? []
+            : await GetRgpdRpProfiles(secondaryUIDs).ConfigureAwait(false);
+
+        export.SecondaryAccountCount = secondaryAuths.Count;
+        export.SecondaryAccountUIDs = secondaryUIDs;
+        export.SecondaryAccounts = secondaryAuths
+            .Select(a => new RgpdSecondaryAccountDto
+            {
+                UID = a.UserUID,
+                Alias = a.User?.Alias,
+                LastLoggedIn = a.User?.LastLoggedIn ?? default,
+                IsBanned = a.IsBanned,
+                RpProfiles = secondaryRpProfiles
+                    .Where(r => string.Equals(r.UserUID, a.UserUID, StringComparison.Ordinal))
+                    .Select(r => r.Profile)
+                    .ToList(),
+            })
+            .ToList();
+    }
+
+    private async Task AddRgpdGroupBans(RgpdDataExportDto export)
+    {
+        export.GroupBansReceived = await DbContext.GroupBans.AsNoTracking()
+            .Where(b => b.BannedUserUID == UserUID)
+            .Select(b => new RgpdGroupBanDto
+            {
+                GID = b.GroupGID,
+                BannedOn = b.BannedOn,
+                Reason = b.BannedReason,
+                OtherUID = b.BannedByUID,
+            })
+            .ToListAsync().ConfigureAwait(false);
+
+        export.GroupBansIssued = await DbContext.GroupBans.AsNoTracking()
+            .Where(b => b.BannedByUID == UserUID)
+            .Select(b => new RgpdGroupBanDto
+            {
+                GID = b.GroupGID,
+                BannedOn = b.BannedOn,
+                Reason = b.BannedReason,
+                OtherUID = b.BannedUserUID,
+            })
+            .ToListAsync().ConfigureAwait(false);
+    }
+
+    private async Task AddRgpdPermissions(RgpdDataExportDto export)
+    {
+        export.PairPermissions = await DbContext.Permissions.AsNoTracking()
+            .Where(p => p.UserUID == UserUID)
+            .Select(p => new RgpdPairPermissionDto
+            {
+                OtherUID = p.OtherUserUID,
+                Sticky = p.Sticky,
+                IsPaused = p.IsPaused,
+                DisableAnimations = p.DisableAnimations,
+                DisableVFX = p.DisableVFX,
+                DisableSounds = p.DisableSounds,
+            })
+            .ToListAsync().ConfigureAwait(false);
+
+        export.GroupPermissions = await DbContext.GroupPairPreferredPermissions.AsNoTracking()
+            .Where(p => p.UserUID == UserUID)
+            .Select(p => new RgpdGroupPermissionDto
+            {
+                GID = p.GroupGID,
+                IsPaused = p.IsPaused,
+                DisableAnimations = p.DisableAnimations,
+                DisableSounds = p.DisableSounds,
+                DisableVFX = p.DisableVFX,
+            })
+            .ToListAsync().ConfigureAwait(false);
+
+        export.DefaultPermissions = await DbContext.UserDefaultPreferredPermissions.AsNoTracking()
+            .Where(p => p.UserUID == UserUID)
+            .Select(p => new RgpdDefaultPermissionsDto
+            {
+                DisableIndividualAnimations = p.DisableIndividualAnimations,
+                DisableIndividualSounds = p.DisableIndividualSounds,
+                DisableIndividualVFX = p.DisableIndividualVFX,
+                DisableGroupAnimations = p.DisableGroupAnimations,
+                DisableGroupSounds = p.DisableGroupSounds,
+                DisableGroupVFX = p.DisableGroupVFX,
+                IndividualIsSticky = p.IndividualIsSticky,
+            })
+            .SingleOrDefaultAsync().ConfigureAwait(false);
+    }
+
+    private async Task AddRgpdScenarioAccessAndReports(RgpdDataExportDto export)
+    {
+        // Les listes d'accès stockent les identifiants normalisés en majuscules.
+        var upperUid = UserUID.ToUpperInvariant();
+
+        export.EditableScenarioIds = await DbContext.HousingScenarioAllowedEditors.AsNoTracking()
+            .Where(e => e.EditorUid == UserUID || e.EditorUid == upperUid)
+            .Select(e => e.ShareId)
+            .Distinct()
+            .ToListAsync().ConfigureAwait(false);
+
+        export.InvitedScenarioIds = await DbContext.HousingScenarioAllowedUsers.AsNoTracking()
+            .Where(a => a.AllowedIndividualUid == UserUID || a.AllowedIndividualUid == upperUid)
+            .Select(a => a.ShareId)
+            .Distinct()
+            .ToListAsync().ConfigureAwait(false);
+
+        export.ProfileReportsIssued = await DbContext.UserProfileReports.AsNoTracking()
+            .Where(r => r.ReportingUserUID == UserUID)
+            .Select(r => new RgpdProfileReportDto
+            {
+                ReportDate = r.ReportDate,
+                ReportReason = r.ReportReason,
+            })
+            .ToListAsync().ConfigureAwait(false);
     }
 
     [Authorize(Policy = "Identified")]

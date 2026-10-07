@@ -54,7 +54,7 @@ public class ServerTokenGenerator
 
         _tokenDictionary[signingKey] = rawData;
 
-        _logger.LogInformation("Generated Token: {data}", rawData);
+        _logger.LogInformation("Generated Token");
 
         return rawData;
     }

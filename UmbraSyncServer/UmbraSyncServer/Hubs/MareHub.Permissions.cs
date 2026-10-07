@@ -42,8 +42,8 @@ public partial class MareHub
     public async Task SetBulkPermissions(BulkPermissionsDto dto)
     {
         _logger.LogCallInfo(MareHubLogger.Args(
-            "Individual", string.Join(';', dto.AffectedUsers.Select(g => g.Key + ":" + g.Value)),
-            "Group", string.Join(';', dto.AffectedGroups.Select(g => g.Key + ":" + g.Value))));
+            "Individual", dto.AffectedUsers.Count,
+            "Group", dto.AffectedGroups.Count));
 
         // On retire l'auto-référence si le client l'a envoyée par erreur
         dto.AffectedUsers.Remove(UserUID);

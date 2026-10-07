@@ -38,7 +38,7 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task<SlotInfoResponseDto?> SlotGetNearby(uint serverId, uint territoryId, uint divisionId, uint wardId, float x, float y, float z)
     {
-        _logger.LogCallInfo(MareHubLogger.Args(serverId, territoryId, divisionId, wardId, x, y, z));
+        _logger.LogCallInfo(MareHubLogger.Args(serverId, territoryId));
 
         var slots = await DbContext.Slots
             .Include(s => s.Group)

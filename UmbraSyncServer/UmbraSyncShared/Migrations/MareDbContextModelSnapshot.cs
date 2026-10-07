@@ -1002,6 +1002,11 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("text")
                         .HasColumnName("base64profile_image");
 
+                    b.Property<string>("BorderColor")
+                        .HasMaxLength(9)
+                        .HasColumnType("character varying(9)")
+                        .HasColumnName("border_color");
+
                     b.Property<string>("Description")
                         .HasColumnType("text")
                         .HasColumnName("description");

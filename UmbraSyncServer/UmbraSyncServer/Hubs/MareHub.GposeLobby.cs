@@ -11,15 +11,16 @@ namespace MareSynchronosServer.Hubs;
 
 public partial class MareHub
 {
-    private async Task<string?> GetUserGposeLobby()
+    private async Task<string?> GetUserGposeLobby(string uid = null)
     {
-        return await _redis.GetAsync<string>(GposeLobbyUser).ConfigureAwait(false);
+        return await _redis.GetAsync<string>(GposeLobbyUserKey(uid ?? UserUID)).ConfigureAwait(false);
     }
 
-    private async Task<List<string>> GetUsersInLobby(string lobbyId, bool includeSelf = false)
+    private async Task<List<string>> GetUsersInLobby(string lobbyId, bool includeSelf = false, string uid = null)
     {
+        uid ??= UserUID;
         var users = await _redis.GetAsync<List<string>>($"GposeLobby:{lobbyId}").ConfigureAwait(false);
-        return users?.Where(u => includeSelf || !string.Equals(u, UserUID, StringComparison.Ordinal)).ToList() ?? [];
+        return users?.Where(u => includeSelf || !string.Equals(u, uid, StringComparison.Ordinal)).ToList() ?? [];
     }
 
     private async Task AddUserToLobby(string lobbyId, List<string> priorUsers)
@@ -32,9 +33,10 @@ public partial class MareHub
         await _redis.AddAsync($"GposeLobby:{lobbyId}", priorUsers.Concat([UserUID])).ConfigureAwait(false);
     }
 
-    private async Task RemoveUserFromLobby(string lobbyId, List<string> priorUsers)
+    private async Task RemoveUserFromLobby(string lobbyId, List<string> priorUsers, string uid = null)
     {
-        await _redis.RemoveAsync(GposeLobbyUser).ConfigureAwait(false);
+        uid ??= UserUID;
+        await _redis.RemoveAsync(GposeLobbyUserKey(uid)).ConfigureAwait(false);
 
         _mareMetrics.DecGauge(MetricsAPI.GaugeGposeLobbyUsers);
 
@@ -45,13 +47,15 @@ public partial class MareHub
         }
         else
         {
-            priorUsers.Remove(UserUID);
+            priorUsers.Remove(uid);
             await _redis.AddAsync($"GposeLobby:{lobbyId}", priorUsers).ConfigureAwait(false);
-            await Clients.Users(priorUsers).Client_GposeLobbyLeave(new(UserUID)).ConfigureAwait(false);
+            await Clients.Users(priorUsers).Client_GposeLobbyLeave(new(uid)).ConfigureAwait(false);
         }
     }
 
-    private string GposeLobbyUser => $"GposeLobbyUser:{UserUID}";
+    private string GposeLobbyUser => GposeLobbyUserKey(UserUID);
+
+    private static string GposeLobbyUserKey(string uid) => $"GposeLobbyUser:{uid}";
 
 
     [Authorize(Policy = "Identified")]

@@ -145,7 +145,7 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task<List<HousingShareEntryDto>> HousingShareGetForLocation(LocationInfo location)
     {
-        _logger.LogCallInfo(MareHubLogger.Args(location.ServerId, location.TerritoryId, location.WardId, location.HouseId));
+        _logger.LogCallInfo(MareHubLogger.Args(location.ServerId, location.TerritoryId));
 
         var shares = await DbContext.HousingShares.AsNoTracking()
             .Include(s => s.Owner)

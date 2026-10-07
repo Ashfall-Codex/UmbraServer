@@ -31,7 +31,7 @@ public class ServerConfiguration : MareConfigurationBase
     public bool PurgeUnusedAccounts { get; set; } = false;
 
     [RemoteConfiguration]
-    public int PurgeUnusedAccountsPeriodInDays { get; set; } = 14;
+    public int PurgeUnusedAccountsPeriodInDays { get; set; } = 365;
 
     [RemoteConfiguration]
     public int MaxCharaDataByUser { get; set; } = 30;

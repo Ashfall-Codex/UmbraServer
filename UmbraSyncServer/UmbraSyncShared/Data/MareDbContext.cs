@@ -166,6 +166,7 @@ public class MareDbContext : DbContext
         mb.Entity<GroupProfile>().Property(p => p.Tags).HasColumnType("text[]");
         mb.Entity<GroupProfile>().Property(p => p.Base64ProfileImage).HasColumnType("text");
         mb.Entity<GroupProfile>().Property(p => p.Base64BannerImage).HasColumnType("text");
+        mb.Entity<GroupProfile>().Property(p => p.BorderColor).HasMaxLength(9);
     }
 
     private static void ConfigureUserProfileEntities(ModelBuilder mb)

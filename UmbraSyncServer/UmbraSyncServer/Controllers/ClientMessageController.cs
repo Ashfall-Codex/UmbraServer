@@ -29,12 +29,12 @@ public class ClientMessageController : Controller
 
         if (!hasUid)
         {
-            _logger.LogInformation("Sending Message of severity {severity} to all online users: {message}", msg.Severity, msg.Message);
+            _logger.LogInformation("Sending Message of severity {severity} to all online users ({length} chars)", msg.Severity, msg.Message?.Length ?? 0);
             await _hubContext.Clients.All.Client_ReceiveServerMessage(msg.Severity, msg.Message).ConfigureAwait(false);
         }
         else
         {
-            _logger.LogInformation("Sending Message of severity {severity} to user {uid}: {message}", msg.Severity, msg.UID, msg.Message);
+            _logger.LogInformation("Sending Message of severity {severity} to user {uid} ({length} chars)", msg.Severity, msg.UID, msg.Message?.Length ?? 0);
             await _hubContext.Clients.User(msg.UID).Client_ReceiveServerMessage(msg.Severity, msg.Message).ConfigureAwait(false);
         }
 
@@ -57,7 +57,7 @@ public class ClientMessageController : Controller
         if (message.Length > MaxBroadcastLength)
             message = message[..MaxBroadcastLength];
 
-        _logger.LogInformation("Broadcasting message of severity {severity} to all online users: {message}", msg.Severity, message);
+        _logger.LogInformation("Broadcasting message of severity {severity} to all online users ({length} chars)", msg.Severity, message.Length);
 
         await _hubContext.Clients.All.Client_ReceiveBroadcast(new BroadcastMessageDto
         {

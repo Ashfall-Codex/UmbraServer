@@ -122,7 +122,7 @@ public class MareConfigurationServiceClient<T> : IHostedService, IConfigurationS
             using var response = await _httpClient.SendAsync(msg).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
             var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            _logger.LogInformation("Http Response for {key} = {value}", key, content);
+            _logger.LogInformation("Http Response received for {key}", key);
             return JsonSerializer.Deserialize<T1>(content);
         }
         catch (Exception ex)

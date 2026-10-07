@@ -61,87 +61,69 @@ public partial class MareHub
 
     private async Task DeleteUser(User user)
     {
-        var ownPairData = await DbContext.ClientPairs.Where(u => u.User.UID == user.UID).ToListAsync().ConfigureAwait(false);
-        var auth = await DbContext.Auth.SingleAsync(u => u.UserUID == user.UID).ConfigureAwait(false);
-        var lodestone = await DbContext.LodeStoneAuth.SingleOrDefaultAsync(a => a.User.UID == user.UID).ConfigureAwait(false);
-        var groupPairs = await DbContext.GroupPairs.Where(g => g.GroupUserUID == user.UID).ToListAsync().ConfigureAwait(false);
-        var userProfileData = await DbContext.UserProfileData.SingleOrDefaultAsync(u => u.UserUID == user.UID).ConfigureAwait(false);
-        var bannedEntries = await DbContext.GroupBans.Where(u => u.BannedUserUID == user.UID).ToListAsync().ConfigureAwait(false);
+        var uid = user.UID;
+        var userData = user.ToUserData();
+        var pairedWithUser = await DbContext.ClientPairs.AsNoTracking()
+            .Where(u => u.OtherUserUID == uid)
+            .Select(u => u.UserUID)
+            .ToListAsync().ConfigureAwait(false);
 
-        // RGPD: cascade delete RP profiles
-        var rpProfiles = await DbContext.CharacterRpProfiles.Where(r => r.UserUID == user.UID).ToListAsync().ConfigureAwait(false);
-        DbContext.CharacterRpProfiles.RemoveRange(rpProfiles);
-
-        // RGPD: cascade delete CharaData (files, poses, swaps, originals, allowances are cascade-deleted by EF)
-        var charaData = await DbContext.CharaData
-            .Include(c => c.Files)
-            .Include(c => c.Poses)
-            .Include(c => c.FileSwaps)
-            .Include(c => c.OriginalFiles)
-            .Include(c => c.AllowedIndividiuals)
-            .Where(c => c.UploaderUID == user.UID).ToListAsync().ConfigureAwait(false);
-        DbContext.CharaData.RemoveRange(charaData);
-
-        // RGPD: cascade delete MCDF shares (allowed users/groups are cascade-deleted by EF)
-        var mcdfShares = await DbContext.McdfShares
-            .Include(s => s.AllowedIndividuals)
-            .Include(s => s.AllowedSyncshells)
-            .Where(s => s.OwnerUID == user.UID).ToListAsync().ConfigureAwait(false);
-        DbContext.McdfShares.RemoveRange(mcdfShares);
-
-        // RGPD: cascade delete housing shares
-        var housingShares = await DbContext.HousingShares.Where(h => h.OwnerUID == user.UID).ToListAsync().ConfigureAwait(false);
-        DbContext.HousingShares.RemoveRange(housingShares);
-
-        // RGPD: cascade delete uploaded files
-        var uploadedFiles = await DbContext.Files.Where(f => f.UploaderUID == user.UID).ToListAsync().ConfigureAwait(false);
-        DbContext.Files.RemoveRange(uploadedFiles);
-
-        // RGPD: anonymize profile reports (keep for audit but remove UID reference)
-        var reportsAboutUser = await DbContext.UserProfileReports.Where(r => r.ReportedUserUID == user.UID).ToListAsync().ConfigureAwait(false);
-        foreach (var report in reportsAboutUser) report.ReportedUserUID = "[deleted]";
-        var reportsByUser = await DbContext.UserProfileReports.Where(r => r.ReportingUserUID == user.UID).ToListAsync().ConfigureAwait(false);
-        foreach (var report in reportsByUser) report.ReportingUserUID = "[deleted]";
-
-        // RGPD: remove allowances where user is the allowed party
-        var allowancesForUser = await DbContext.CharaDataAllowances.Where(a => a.AllowedUserUID == user.UID).ToListAsync().ConfigureAwait(false);
-        DbContext.CharaDataAllowances.RemoveRange(allowancesForUser);
-
-        // RGPD: remove MCDF share allowed entries where user is the allowed party
-        var mcdfAllowedForUser = await DbContext.McdfShareAllowedUsers.Where(a => a.AllowedIndividualUid == user.UID).ToListAsync().ConfigureAwait(false);
-        DbContext.McdfShareAllowedUsers.RemoveRange(mcdfAllowedForUser);
-
-        if (lodestone != null)
-        {
-            DbContext.Remove(lodestone);
-        }
-
-        if (userProfileData != null)
-        {
-            DbContext.Remove(userProfileData);
-        }
-
-        DbContext.ClientPairs.RemoveRange(ownPairData);
-        await DbContext.SaveChangesAsync().ConfigureAwait(false);
-        var otherPairData = await DbContext.ClientPairs.Include(u => u.User)
-            .Where(u => u.OtherUser.UID == user.UID).AsNoTracking().ToListAsync().ConfigureAwait(false);
-        foreach (var pair in otherPairData)
-        {
-            await Clients.User(pair.UserUID).Client_UserRemoveClientPair(new(user.ToUserData())).ConfigureAwait(false);
-        }
-
-        foreach (var pair in groupPairs)
-        {
-            await UserLeaveGroup(new GroupDto(new GroupData(pair.GroupGID)), user.UID).ConfigureAwait(false);
-        }
+        // L'effacement en base est commun avec la purge automatique ; seules les notifications restent propres au hub.
+        await SharedDbFunctions.EraseUserAsync(_logger.Logger, DbContext, user, _maxExistingGroupsByUser,
+            pair => UserLeaveGroup(new GroupDto(new GroupData(pair.GroupGID)), uid)).ConfigureAwait(false);
 
         _mareMetrics.IncCounter(MetricsAPI.CounterUsersRegisteredDeleted, 1);
 
-        DbContext.GroupBans.RemoveRange(bannedEntries);
-        DbContext.ClientPairs.RemoveRange(otherPairData);
-        DbContext.Users.Remove(user);
-        DbContext.Auth.Remove(auth);
-        await DbContext.SaveChangesAsync().ConfigureAwait(false);
+        foreach (var pairUid in pairedWithUser)
+        {
+            await Clients.User(pairUid).Client_UserRemoveClientPair(new(userData)).ConfigureAwait(false);
+        }
+
+        await RemoveDeletedUserFromRedis(uid).ConfigureAwait(false);
+    }
+
+    private async Task RemoveDeletedUserFromRedis(string uid)
+    {
+        await SafeLifecycleStep("GposeLobbyLeave", async () =>
+        {
+            var lobbyId = await GetUserGposeLobby(uid).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(lobbyId)) return;
+            var lobbyUsers = await GetUsersInLobby(lobbyId, includeSelf: true, uid).ConfigureAwait(false);
+            await RemoveUserFromLobby(lobbyId, lobbyUsers, uid).ConfigureAwait(false);
+        }).ConfigureAwait(false);
+
+        await SafeLifecycleStep("QuestSessionLeave", async () =>
+        {
+            var sessionId = await GetUserQuestSession(uid).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(sessionId)) return;
+            var sessionUsers = await GetUsersInQuestSession(sessionId, includeSelf: true, uid).ConfigureAwait(false);
+            await RemoveUserFromQuestSession(sessionId, sessionUsers, uid).ConfigureAwait(false);
+        }).ConfigureAwait(false);
+
+        await SafeLifecycleStep("RemoveDiscoveryPresence", () => RemoveDiscoveryPresence(uid)).ConfigureAwait(false);
+        await SafeLifecycleStep("RemoveUserFromRedis", () => RemoveUserFromRedis(uid)).ConfigureAwait(false);
+        await SafeLifecycleStep("DisposePlayer", () => _pairCacheService.DisposePlayer(uid)).ConfigureAwait(false);
+    }
+
+    // Présence de découverte publiée par le service d'authentification (clés nd:uid / nd:hash).
+    // N'a d'effet que si ce service utilise le même Redis ; sinon la présence expire par son TTL.
+    private async Task RemoveDiscoveryPresence(string uid)
+    {
+        var db = _redis.Database;
+        var setKey = "nd:uid:" + uid;
+        var hashes = await db.SetMembersAsync(setKey).ConfigureAwait(false);
+        foreach (var hash in hashes)
+        {
+            var hashKey = "nd:hash:" + hash;
+            var presence = await db.StringGetAsync(hashKey).ConfigureAwait(false);
+            if (!presence.HasValue) continue;
+
+            using var doc = System.Text.Json.JsonDocument.Parse(presence.ToString());
+            if (doc.RootElement.TryGetProperty("Uid", out var owner) && string.Equals(owner.GetString(), uid, StringComparison.Ordinal))
+                await db.KeyDeleteAsync(hashKey).ConfigureAwait(false);
+        }
+
+        await db.KeyDeleteAsync(setKey).ConfigureAwait(false);
     }
 
     private async Task<List<PausedEntry>> GetAllPairedClientsWithPauseState(string? uid = null)
@@ -241,9 +223,9 @@ public partial class MareHub
         return await _redis.GetAsync<string>("UID:" + uid).ConfigureAwait(false);
     }
 
-    private async Task RemoveUserFromRedis()
+    private async Task RemoveUserFromRedis(string uid = null)
     {
-        await _redis.RemoveAsync("UID:" + UserUID, StackExchange.Redis.CommandFlags.FireAndForget).ConfigureAwait(false);
+        await _redis.RemoveAsync("UID:" + (uid ?? UserUID), StackExchange.Redis.CommandFlags.FireAndForget).ConfigureAwait(false);
     }
 
     private async Task SendGroupDeletedToAll(List<GroupPair> groupUsers)

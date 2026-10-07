@@ -39,6 +39,10 @@ namespace MareSynchronosServer.Utils
 
         public static EstablishmentDto ToEstablishmentDto(this Establishment establishment, string currentUserUID)
         {
+            // Le gérant n'est exposé aux tiers que si le propriétaire l'a choisi ; lui-même voit toujours ses données.
+            bool isOwner = string.Equals(establishment.OwnerUID, currentUserUID, StringComparison.Ordinal);
+            var manager = isOwner || establishment.ShowManagerOnProfile ? establishment.ManagerRpProfile : null;
+
             return new EstablishmentDto
             {
                 Id = establishment.Id,
@@ -56,11 +60,11 @@ namespace MareSynchronosServer.Utils
                 UpdatedUtc = establishment.UpdatedUtc,
                 LogoImageBase64 = establishment.LogoImageBase64,
                 BannerImageBase64 = establishment.BannerImageBase64,
-                ManagerRpProfileId = establishment.ManagerRpProfileId,
-                ManagerCharacterName = establishment.ManagerRpProfile?.CharacterName,
-                ManagerRpFirstName = establishment.ManagerRpProfile?.RpFirstName,
-                ManagerRpLastName = establishment.ManagerRpProfile?.RpLastName,
-                ManagerRpProfilePictureBase64 = establishment.ManagerRpProfile?.RpProfilePictureBase64,
+                ManagerRpProfileId = isOwner || establishment.ShowManagerOnProfile ? establishment.ManagerRpProfileId : null,
+                ManagerCharacterName = manager?.CharacterName,
+                ManagerRpFirstName = manager?.RpFirstName,
+                ManagerRpLastName = manager?.RpLastName,
+                ManagerRpProfilePictureBase64 = manager?.RpProfilePictureBase64,
                 ShowManagerOnProfile = establishment.ShowManagerOnProfile,
                 Location = new EstablishmentLocationDto
                 {
