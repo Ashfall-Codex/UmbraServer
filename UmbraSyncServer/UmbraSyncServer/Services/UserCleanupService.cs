@@ -15,14 +15,16 @@ public class UserCleanupService : IHostedService
     private readonly ILogger<UserCleanupService> _logger;
     private readonly IDbContextFactory<MareDbContext> _mareDbContextFactory;
     private readonly IConfigurationService<ServerConfiguration> _configuration;
+    private readonly McdfShareStorage _mcdfStorage;
     private CancellationTokenSource _cleanupCts;
 
-    public UserCleanupService(MareMetrics metrics, ILogger<UserCleanupService> logger, IDbContextFactory<MareDbContext> mareDbContextFactory, IConfigurationService<ServerConfiguration> configuration)
+    public UserCleanupService(MareMetrics metrics, ILogger<UserCleanupService> logger, IDbContextFactory<MareDbContext> mareDbContextFactory, IConfigurationService<ServerConfiguration> configuration, McdfShareStorage mcdfStorage)
     {
         this.metrics = metrics;
         _logger = logger;
         _mareDbContextFactory = mareDbContextFactory;
         _configuration = configuration;
+        _mcdfStorage = mcdfStorage;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -44,13 +46,15 @@ public class UserCleanupService : IHostedService
 
                 CleanUpOutdatedLodestoneAuths(dbContext);
 
-                await PurgeUnusedAccounts(dbContext).ConfigureAwait(false);
-
                 await PurgeTempInvites(dbContext).ConfigureAwait(false);
                 await PurgeExpiredTemporaryGroups(dbContext).ConfigureAwait(false);
+                await PurgeExpiredWildRpAnnouncements(dbContext, ct).ConfigureAwait(false);
+                await PurgeExpiredMcdfShares(dbContext, ct).ConfigureAwait(false);
 
                 dbContext.SaveChanges();
             }
+
+            await PurgeUnusedAccounts(ct).ConfigureAwait(false);
 
             var span = TimeSpan.FromMinutes(1);
             var nextRun = DateTime.Now.Add(span);
@@ -95,39 +99,104 @@ public class UserCleanupService : IHostedService
         }
     }
 
-    private async Task PurgeUnusedAccounts(MareDbContext dbContext)
+    private async Task PurgeUnusedAccounts(CancellationToken ct)
     {
         try
         {
-            if (_configuration.GetValueOrDefault(nameof(ServerConfiguration.PurgeUnusedAccounts), false))
+            if (!_configuration.GetValueOrDefault(nameof(ServerConfiguration.PurgeUnusedAccounts), false)) return;
+
+            var usersOlderThanDays = _configuration.GetValueOrDefault(nameof(ServerConfiguration.PurgeUnusedAccountsPeriodInDays), 365);
+            var maxGroupsByUser = _configuration.GetValueOrDefault(nameof(ServerConfiguration.MaxExistingGroupsByUser), 3);
+            var cutoff = DateTime.UtcNow - TimeSpan.FromDays(usersOlderThanDays);
+
+            _logger.LogInformation("Cleaning up users older than {usersOlderThanDays} days", usersOlderThanDays);
+
+            List<string> outdatedUids;
+            using (var dbContext = await _mareDbContextFactory.CreateDbContextAsync(ct).ConfigureAwait(false))
             {
-                var usersOlderThanDays = _configuration.GetValueOrDefault(nameof(ServerConfiguration.PurgeUnusedAccountsPeriodInDays), 14);
-                var maxGroupsByUser = _configuration.GetValueOrDefault(nameof(ServerConfiguration.MaxGroupUserCount), 3);
-
-                _logger.LogInformation("Cleaning up users older than {usersOlderThanDays} days", usersOlderThanDays);
-
-                var allUsers = dbContext.Users.Where(u => string.IsNullOrEmpty(u.Alias)).ToList();
-                List<User> usersToRemove = new();
-                foreach (var user in allUsers)
-                {
-                    if (user.LastLoggedIn < DateTime.UtcNow - TimeSpan.FromDays(usersOlderThanDays))
-                    {
-                        _logger.LogInformation("User outdated: {userUID}", user.UID);
-                        usersToRemove.Add(user);
-                    }
-                }
-
-                foreach (var user in usersToRemove)
-                {
-                    await SharedDbFunctions.PurgeUser(_logger, user, dbContext, maxGroupsByUser).ConfigureAwait(false);
-                }
+                // Un compte principal n'est purgé que si tous ses comptes secondaires sont eux aussi inactifs,
+                // puisque sa purge emporte ses secondaires.
+                outdatedUids = await dbContext.Users.AsNoTracking()
+                    .Where(u => u.LastLoggedIn < cutoff)
+                    .Where(u => !dbContext.Auth.Any(a => a.PrimaryUserUID == u.UID && a.User.LastLoggedIn >= cutoff))
+                    .Select(u => u.UID)
+                    .ToListAsync(ct).ConfigureAwait(false);
             }
 
-            _logger.LogInformation("Cleaning up unauthorized users");
+            foreach (var uid in outdatedUids)
+            {
+                if (ct.IsCancellationRequested) break;
+
+                try
+                {
+                    // Un contexte par compte : un échec ne laisse aucun état en attente pour les suivants.
+                    using var dbContext = await _mareDbContextFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+                    var user = await dbContext.Users.SingleOrDefaultAsync(u => u.UID == uid, ct).ConfigureAwait(false);
+                    if (user == null || user.LastLoggedIn >= cutoff) continue;
+
+                    await SharedDbFunctions.PurgeUser(_logger, user, dbContext, maxGroupsByUser).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error during purge of user {uid}", uid);
+                }
+            }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Error during user purge");
+        }
+    }
+
+    private async Task PurgeExpiredWildRpAnnouncements(MareDbContext dbContext, CancellationToken ct)
+    {
+        try
+        {
+            var now = DateTime.UtcNow;
+            var removed = await dbContext.WildRpAnnouncements
+                .Where(a => a.ExpiresAtUtc <= now)
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+
+            if (removed > 0)
+                _logger.LogInformation("Removed {count} expired wild RP announcements", removed);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error during wild RP announcement purge");
+        }
+    }
+
+    private async Task PurgeExpiredMcdfShares(MareDbContext dbContext, CancellationToken ct)
+    {
+        try
+        {
+            var now = DateTime.UtcNow;
+            await dbContext.McdfShareAllowedUsers
+                .Where(a => a.Share.ExpiresAtUtc != null && a.Share.ExpiresAtUtc <= now)
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            await dbContext.McdfShareAllowedGroups
+                .Where(a => a.Share.ExpiresAtUtc != null && a.Share.ExpiresAtUtc <= now)
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            var removed = await dbContext.McdfShares
+                .Where(s => s.ExpiresAtUtc != null && s.ExpiresAtUtc <= now)
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+
+            if (removed > 0)
+                _logger.LogInformation("Removed {count} expired MCDF shares", removed);
+
+            // Les suppressions SQL (expiration, cascade à la suppression d'un compte) ne touchent pas au disque :
+            // on balaie les fichiers sans partage en base (délai de grâce pour les uploads en cours).
+            var knownIds = (await dbContext.McdfShares.AsNoTracking()
+                .Where(s => s.IsFileBacked)
+                .Select(s => s.Id)
+                .ToListAsync(ct).ConfigureAwait(false)).ToHashSet();
+            var swept = _mcdfStorage.SweepOrphans(knownIds, TimeSpan.FromHours(1));
+            if (swept > 0)
+                _logger.LogInformation("Removed {count} orphaned MCDF storage files", swept);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error during MCDF share purge");
         }
     }
 
@@ -153,59 +222,6 @@ public class UserCleanupService : IHostedService
         {
             _logger.LogWarning(ex, "Error during expired auths cleanup");
         }
-    }
-
-    public async Task PurgeUser(User user, MareDbContext dbContext)
-    {
-        _logger.LogInformation("Purging user: {uid}", user.UID);
-
-        var lodestone = dbContext.LodeStoneAuth.SingleOrDefault(a => a.User.UID == user.UID);
-
-        if (lodestone != null)
-        {
-            dbContext.Remove(lodestone);
-        }
-
-        var auth = dbContext.Auth.Single(a => a.UserUID == user.UID);
-
-        var ownPairData = dbContext.ClientPairs.Where(u => u.User.UID == user.UID).ToList();
-        dbContext.ClientPairs.RemoveRange(ownPairData);
-        var otherPairData = dbContext.ClientPairs.Include(u => u.User)
-            .Where(u => u.OtherUser.UID == user.UID).ToList();
-        dbContext.ClientPairs.RemoveRange(otherPairData);
-
-        var userJoinedGroups = await dbContext.GroupPairs.Include(g => g.Group).Where(u => u.GroupUserUID == user.UID).ToListAsync().ConfigureAwait(false);
-
-        foreach (var userGroupPair in userJoinedGroups)
-        {
-            bool ownerHasLeft = string.Equals(userGroupPair.Group.OwnerUID, user.UID, StringComparison.Ordinal);
-
-            if (ownerHasLeft)
-            {
-                var groupPairs = await dbContext.GroupPairs.Where(g => g.GroupGID == userGroupPair.GroupGID && g.GroupUserUID != user.UID).ToListAsync().ConfigureAwait(false);
-
-                if (!groupPairs.Any())
-                {
-                    _logger.LogInformation("Group {gid} has no new owner, deleting", userGroupPair.GroupGID);
-                    dbContext.Groups.Remove(userGroupPair.Group);
-                }
-                else
-                {
-                    _ = await SharedDbFunctions.MigrateOrDeleteGroup(dbContext, userGroupPair.Group, groupPairs, _configuration.GetValueOrDefault(nameof(ServerConfiguration.MaxExistingGroupsByUser), 3)).ConfigureAwait(false);
-                }
-            }
-
-            dbContext.GroupPairs.Remove(userGroupPair);
-
-            await dbContext.SaveChangesAsync().ConfigureAwait(false);
-        }
-
-        _logger.LogInformation("User purged: {uid}", user.UID);
-
-        dbContext.Auth.Remove(auth);
-        dbContext.Users.Remove(user);
-
-        await dbContext.SaveChangesAsync().ConfigureAwait(false);
     }
 
     public Task StopAsync(CancellationToken cancellationToken)

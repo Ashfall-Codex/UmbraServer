@@ -106,6 +106,7 @@ public class Startup
         services.AddHostedService(provider => provider.GetService<CharaDataCleanupService>());
     }
 
+    services.AddSingleton<McdfShareStorage>();
     services.AddSingleton<GPoseLobbyDistributionService>();
     services.AddHostedService(provider => provider.GetService<GPoseLobbyDistributionService>());
     services.AddSingleton<OnlineSyncedPairCacheService>();
@@ -141,7 +142,7 @@ public class Startup
             // au-delà un message ne peut de toute façon pas transiter. Borne la mémoire qu'un push
             // surdimensionné (bug/abus) ou une file de pushs (cf. QueueLimit du ConcurrencyFilter)
             // peut épingler. Les CharaData (métadonnées + glamour/customize) sont très en-deçà, et
-            // les fichiers MCDF passent par le static files server, pas par le hub.
+            // les partages MCDF (McdfShareUpload) passent eux par le hub : le client refuse donc au-delà de ~95 MB.
             hubOptions.MaximumReceiveMessageSize = 100 * 1024 * 1024;
             hubOptions.EnableDetailedErrors = true;
             hubOptions.MaximumParallelInvocationsPerClient = 10;

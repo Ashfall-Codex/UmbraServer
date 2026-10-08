@@ -16,6 +16,9 @@ public class McdfShare
     public byte[] Nonce { get; set; } = Array.Empty<byte>();
     public byte[] Salt { get; set; } = Array.Empty<byte>();
     public byte[] Tag { get; set; } = Array.Empty<byte>();
+    // Partage volumineux : le chiffré est stocké sur disque ({McdfStorageDirectory}/{Id:N}.bin), CipherData reste vide
+    public bool IsFileBacked { get; set; }
+    public long CipherLength { get; set; }
     public DateTime CreatedUtc { get; set; }
     public DateTime? UpdatedUtc { get; set; }
     public DateTime? ExpiresAtUtc { get; set; }

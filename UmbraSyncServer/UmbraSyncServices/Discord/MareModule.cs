@@ -359,7 +359,7 @@ public class MareModule : InteractionModuleBase
         [Summary("severity", "Severity of the message")] MessageSeverity messageType = MessageSeverity.Information,
         [Summary("uid", "User ID to the person to send the message to")] string? uid = null)
     {
-        _logger.LogInformation("SlashCommand:{userId}:{Method}:{message}:{type}:{uid}", Context.Interaction.User.Id, nameof(SendMessageToClients), message, messageType, uid);
+        _logger.LogInformation("SlashCommand:{userId}:{Method}:{type}:{uid}", Context.Interaction.User.Id, nameof(SendMessageToClients), messageType, uid);
 
         using var scope = _services.CreateScope();
         using var db = scope.ServiceProvider.GetRequiredService<MareDbContext>();
@@ -1152,7 +1152,7 @@ public class MareModule : InteractionModuleBase
         {
             if (discordAuthedUser.User != null)
             {
-                var maxGroupsByUser = _mareClientConfigurationService.GetValueOrDefault(nameof(ServerConfiguration.MaxGroupUserCount), 3);
+                var maxGroupsByUser = _mareClientConfigurationService.GetValueOrDefault(nameof(ServerConfiguration.MaxExistingGroupsByUser), 3);
 
                 await SharedDbFunctions.PurgeUser(_logger, discordAuthedUser.User, db, maxGroupsByUser);
             }

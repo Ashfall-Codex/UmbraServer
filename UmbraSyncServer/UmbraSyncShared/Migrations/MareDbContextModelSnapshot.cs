@@ -1002,6 +1002,11 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("text")
                         .HasColumnName("base64profile_image");
 
+                    b.Property<string>("BorderColor")
+                        .HasMaxLength(9)
+                        .HasColumnType("character varying(9)")
+                        .HasColumnName("border_color");
+
                     b.Property<string>("Description")
                         .HasColumnType("text")
                         .HasColumnName("description");
@@ -1360,6 +1365,12 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("cipher_data");
 
+                    b.Property<long>("CipherLength")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("cipher_length");
+
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_utc");
@@ -1375,6 +1386,12 @@ namespace MareSynchronosServer.Migrations
                     b.Property<DateTime?>("ExpiresAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
+
+                    b.Property<bool>("IsFileBacked")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_file_backed");
 
                     b.Property<byte[]>("Nonce")
                         .HasColumnType("bytea")

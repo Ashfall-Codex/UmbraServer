@@ -31,13 +31,17 @@ public class ServerConfiguration : MareConfigurationBase
     public bool PurgeUnusedAccounts { get; set; } = false;
 
     [RemoteConfiguration]
-    public int PurgeUnusedAccountsPeriodInDays { get; set; } = 14;
+    public int PurgeUnusedAccountsPeriodInDays { get; set; } = 365;
 
     [RemoteConfiguration]
     public int MaxCharaDataByUser { get; set; } = 30;
     
     [RemoteConfiguration]
     public bool BroadcastPresenceOnPermissionChange { get; set; } = false;
+    /// <summary>Dossier des partages MCDF volumineux (streaming). Vide = {AppContext.BaseDirectory}/mcdf_shares.</summary>
+    public string McdfStorageDirectory { get; set; } = string.Empty;
+    /// <summary>Taille maximale d'un MCDF chiffré reçu en streaming, en MiB.</summary>
+    public int McdfMaxSizeInMiB { get; set; } = 2048;
     public int HubExecutionConcurrencyLimit { get; set; } = 50;
 
     /// <summary>
@@ -82,6 +86,8 @@ public class ServerConfiguration : MareConfigurationBase
         sb.AppendLine($"{nameof(MaxCharaDataByUser)} => {MaxCharaDataByUser}");
         sb.AppendLine($"{nameof(BroadcastPresenceOnPermissionChange)} => {BroadcastPresenceOnPermissionChange}");
         sb.AppendLine($"{nameof(HubExecutionConcurrencyLimit)} => {HubExecutionConcurrencyLimit}");
+        sb.AppendLine($"{nameof(McdfStorageDirectory)} => {McdfStorageDirectory}");
+        sb.AppendLine($"{nameof(McdfMaxSizeInMiB)} => {McdfMaxSizeInMiB}");
         sb.AppendLine($"{nameof(ConnectBaseUrl)} => {ConnectBaseUrl}");
         sb.AppendLine($"{nameof(ConnectServiceToken)} => ***");
         sb.AppendLine($"{nameof(ConnectIncomingServiceToken)} => ***");

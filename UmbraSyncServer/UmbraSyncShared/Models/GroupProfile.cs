@@ -21,4 +21,7 @@ public class GroupProfile
     public bool IsNSFW { get; set; }
 
     public bool IsDisabled { get; set; }
+
+    [MaxLength(9)]
+    public string? BorderColor { get; set; }
 }

@@ -166,6 +166,7 @@ public class MareDbContext : DbContext
         mb.Entity<GroupProfile>().Property(p => p.Tags).HasColumnType("text[]");
         mb.Entity<GroupProfile>().Property(p => p.Base64ProfileImage).HasColumnType("text");
         mb.Entity<GroupProfile>().Property(p => p.Base64BannerImage).HasColumnType("text");
+        mb.Entity<GroupProfile>().Property(p => p.BorderColor).HasMaxLength(9);
     }
 
     private static void ConfigureUserProfileEntities(ModelBuilder mb)
@@ -236,6 +237,8 @@ public class MareDbContext : DbContext
         mb.Entity<McdfShare>().Property(s => s.Nonce).HasColumnType("bytea");
         mb.Entity<McdfShare>().Property(s => s.Salt).HasColumnType("bytea");
         mb.Entity<McdfShare>().Property(s => s.Tag).HasColumnType("bytea");
+        mb.Entity<McdfShare>().Property(s => s.IsFileBacked).HasColumnType("boolean").HasDefaultValue(false);
+        mb.Entity<McdfShare>().Property(s => s.CipherLength).HasColumnType("bigint").HasDefaultValue(0L);
         mb.Entity<McdfShare>().Property(s => s.CreatedUtc).HasColumnType("timestamp with time zone");
         mb.Entity<McdfShare>().Property(s => s.UpdatedUtc).HasColumnType("timestamp with time zone");
         mb.Entity<McdfShare>().Property(s => s.ExpiresAtUtc).HasColumnType("timestamp with time zone");
