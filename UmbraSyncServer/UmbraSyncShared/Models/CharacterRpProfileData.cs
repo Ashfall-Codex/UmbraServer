@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using UmbraSync.API.Data.Enum;
 
 namespace MareSynchronosShared.Models;
 
@@ -39,4 +40,5 @@ public class CharacterRpProfileData
     public byte RpLevel { get; set; }
     public string? EnrichedProfileJson { get; set; }
     public string? EnrichedProfileVisibility { get; set; }
+    public RpProfileVisibility Visibility { get; set; }
 }

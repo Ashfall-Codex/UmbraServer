@@ -122,9 +122,6 @@ public class Startup
             a.FeatureProviders.Remove(a.FeatureProviders.OfType<ControllerFeatureProvider>().First());
             a.FeatureProviders.Add(new AllowedControllersFeatureProvider(typeof(JwtController), typeof(WellKnownController), typeof(DiscoveryController)));
         });
-
-        services.AddSingleton<DiscoveryWellKnownProvider>();
-        services.AddHostedService(p => p.GetRequiredService<DiscoveryWellKnownProvider>());
     }
 
     private static void ConfigureAuthorization(IServiceCollection services)

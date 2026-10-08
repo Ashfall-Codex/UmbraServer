@@ -56,7 +56,7 @@ public partial class MareHub
             .ConfigureAwait(false);
 
         _logger.LogCallInfo(MareHubLogger.Args(announcement.Id, "Announced"));
-        return result?.ToWildRpAnnouncementDto();
+        return result?.ToWildRpAnnouncementDto(forOwner: true);
     }
 
     [Authorize(Policy = "Identified")]
@@ -135,6 +135,6 @@ public partial class MareHub
             .FirstOrDefaultAsync(a => a.UserUID == UserUID && a.ExpiresAtUtc > now)
             .ConfigureAwait(false);
 
-        return announcement?.ToWildRpAnnouncementDto();
+        return announcement?.ToWildRpAnnouncementDto(forOwner: true);
     }
 }

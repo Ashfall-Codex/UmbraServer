@@ -42,6 +42,8 @@ namespace MareSynchronosServer.Utils
             // Le gérant n'est exposé aux tiers que si le propriétaire l'a choisi ; lui-même voit toujours ses données.
             bool isOwner = string.Equals(establishment.OwnerUID, currentUserUID, StringComparison.Ordinal);
             var manager = isOwner || establishment.ShowManagerOnProfile ? establishment.ManagerRpProfile : null;
+            // Un profil RP masqué par son propriétaire n'est exposé à personne d'autre, même via un établissement.
+            if (!isOwner && manager is { Visibility: RpProfileVisibility.Hidden }) manager = null;
 
             return new EstablishmentDto
             {
@@ -60,7 +62,7 @@ namespace MareSynchronosServer.Utils
                 UpdatedUtc = establishment.UpdatedUtc,
                 LogoImageBase64 = establishment.LogoImageBase64,
                 BannerImageBase64 = establishment.BannerImageBase64,
-                ManagerRpProfileId = isOwner || establishment.ShowManagerOnProfile ? establishment.ManagerRpProfileId : null,
+                ManagerRpProfileId = isOwner || (establishment.ShowManagerOnProfile && manager != null) ? establishment.ManagerRpProfileId : null,
                 ManagerCharacterName = manager?.CharacterName,
                 ManagerRpFirstName = manager?.RpFirstName,
                 ManagerRpLastName = manager?.RpLastName,
@@ -164,8 +166,11 @@ namespace MareSynchronosServer.Utils
             return groupUserInfo;
         }
 
-        public static WildRpAnnouncementDto ToWildRpAnnouncementDto(this WildRpAnnouncement announcement)
+        public static WildRpAnnouncementDto ToWildRpAnnouncementDto(this WildRpAnnouncement announcement, bool forOwner = false)
         {
+            // Un profil RP masqué par son propriétaire n'apparaît pas dans l'annonce vue par les autres.
+            var rpProfile = forOwner || announcement.RpProfile is not { Visibility: RpProfileVisibility.Hidden } ? announcement.RpProfile : null;
+
             return new WildRpAnnouncementDto
             {
                 Id = announcement.Id,
@@ -176,11 +181,11 @@ namespace MareSynchronosServer.Utils
                 TerritoryId = announcement.TerritoryId,
                 WardId = announcement.WardId,
                 Message = announcement.Message,
-                RpTitle = announcement.RpProfile?.RpTitle,
-                RpFirstName = announcement.RpProfile?.RpFirstName,
-                RpLastName = announcement.RpProfile?.RpLastName,
-                RpProfilePictureBase64 = announcement.RpProfile?.RpProfilePictureBase64,
-                RpLevel = announcement.RpProfile?.RpLevel ?? 0,
+                RpTitle = rpProfile?.RpTitle,
+                RpFirstName = rpProfile?.RpFirstName,
+                RpLastName = rpProfile?.RpLastName,
+                RpProfilePictureBase64 = rpProfile?.RpProfilePictureBase64,
+                RpLevel = rpProfile?.RpLevel ?? 0,
                 CreatedAtUtc = announcement.CreatedAtUtc,
                 ExpiresAtUtc = announcement.ExpiresAtUtc
             };

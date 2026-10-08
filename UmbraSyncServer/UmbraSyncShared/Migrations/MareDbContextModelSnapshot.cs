@@ -471,6 +471,10 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("character varying(10)")
                         .HasColumnName("user_uid");
 
+                    b.Property<int>("Visibility")
+                        .HasColumnType("integer")
+                        .HasColumnName("visibility");
+
                     b.Property<long>("WorldId")
                         .HasColumnType("bigint")
                         .HasColumnName("world_id");

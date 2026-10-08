@@ -272,37 +272,42 @@ public partial class MareHub
     {
         _logger.LogCallInfo(MareHubLogger.Args(user));
 
+        var isSelf = string.Equals(user.User.UID, UserUID, StringComparison.Ordinal);
         var allUserPairs = await GetAllPairedUnpausedUsers().ConfigureAwait(false);
+        var isPaired = allUserPairs.Contains(user.User.UID, StringComparer.Ordinal);
 
-        if (!allUserPairs.Contains(user.User.UID) && !string.Equals(user.User.UID, UserUID, StringComparison.Ordinal))
-        {
-            return new UserProfileDto(user.User, false, null, null, "Due to the pause status you cannot access this users profile.");
-        }
-
-        var hrpData = await DbContext.UserProfileData.SingleOrDefaultAsync(u => u.UserUID == user.User.UID).ConfigureAwait(false);
         CharacterRpProfileData? rpData = null;
         if (!string.IsNullOrEmpty(user.CharacterName) && user.WorldId.HasValue)
         {
             rpData = await DbContext.CharacterRpProfiles.SingleOrDefaultAsync(u => u.UserUID == user.User.UID && u.CharacterName == user.CharacterName && u.WorldId == user.WorldId).ConfigureAwait(false);
         }
 
-        if (hrpData == null && rpData == null) return new UserProfileDto(user.User, false, null, null, null);
+        // Le profil HRP reste réservé à soi-même et aux paires ; la visibilité ne gouverne que le profil RP du personnage.
+        var hrpAllowed = isSelf || isPaired;
+        var isDirectPaired = rpData is { Visibility: RpProfileVisibility.PairsOnly } && isPaired && await IsDirectPairedAsync(user.User.UID).ConfigureAwait(false);
+        var rpAllowed = rpData != null && CanViewRpProfile(rpData.Visibility, isSelf, isPaired, isDirectPaired);
 
-        if (hrpData?.FlaggedForReport ?? false) return new UserProfileDto(user.User, true, null, null, "This profile is flagged for report and pending evaluation");
-        if (hrpData?.ProfileDisabled ?? false) return new UserProfileDto(user.User, true, null, null, "This profile was permanently disabled");
+        if (!hrpAllowed && !rpAllowed)
+        {
+            return new UserProfileDto(user.User, false, null, null, "Due to the pause status you cannot access this users profile.");
+        }
 
-        return new UserProfileDto(user.User, false, hrpData?.IsNSFW, hrpData?.Base64ProfileImage, hrpData?.UserDescription,
-            rpData?.RpProfilePictureBase64, rpData?.RpDescription, rpData?.IsRpNSFW,
-            rpData?.RpFirstName, rpData?.RpLastName, rpData?.RpTitle, rpData?.RpAge,
-            rpData?.RpRace, rpData?.RpEthnicity,
-            rpData?.RpHeight, rpData?.RpBuild, rpData?.RpResidence, rpData?.RpOccupation, rpData?.RpAffiliation,
-            rpData?.RpAlignment, rpData?.RpAdditionalInfo,
-            rpData?.RpNameColor,
-            rpData?.RpCustomFields,
-            rpData?.MoodlesData,
-            rpData?.ChatIcon,
-            rpData?.RpLevel,
-            rpData?.CharacterName, rpData?.WorldId);
+        var hrpRow = await DbContext.UserProfileData.SingleOrDefaultAsync(u => u.UserUID == user.User.UID).ConfigureAwait(false);
+
+        // La modération vaut pour tous les accès, même pour un profil RP public vu par un inconnu.
+        if (hrpRow?.FlaggedForReport ?? false) return new UserProfileDto(user.User, true, null, null, "This profile is flagged for report and pending evaluation");
+        if (hrpRow?.ProfileDisabled ?? false) return new UserProfileDto(user.User, true, null, null, "This profile was permanently disabled");
+
+        var hrpData = hrpAllowed ? hrpRow : null;
+
+        // Le propriétaire connaît toujours son réglage. Un lecteur refusé reçoit le niveau (jamais le contenu) :
+        // son client sait ainsi que la fiche n'est plus visible et purge sa copie locale.
+        var shownVisibility = isSelf || !rpAllowed ? rpData?.Visibility : null;
+        if (!rpAllowed) rpData = null;
+
+        if (hrpData == null && rpData == null && shownVisibility == null) return new UserProfileDto(user.User, false, null, null, null);
+
+        return ToUserProfileDto(user, hrpData, rpData, shownVisibility);
     }
 
     [Authorize(Policy = "Identified")]
@@ -316,47 +321,83 @@ public partial class MareHub
             return [];
         }
 
+        var isSelf = string.Equals(user.User.UID, UserUID, StringComparison.Ordinal);
         var allUserPairs = await GetAllPairedUnpausedUsers().ConfigureAwait(false);
-
-        if (!allUserPairs.Contains(user.User.UID) && !string.Equals(user.User.UID, UserUID, StringComparison.Ordinal))
-        {
-            return [];
-        }
+        var isPaired = allUserPairs.Contains(user.User.UID, StringComparer.Ordinal);
 
         // Anti-stalk: verify that the claimed encountered character actually exists in DB for this UID
-        var encounteredExists = await DbContext.CharacterRpProfiles
-            .AnyAsync(u => u.UserUID == user.User.UID && u.CharacterName == user.CharacterName && u.WorldId == user.WorldId)
+        var encountered = await DbContext.CharacterRpProfiles
+            .SingleOrDefaultAsync(u => u.UserUID == user.User.UID && u.CharacterName == user.CharacterName && u.WorldId == user.WorldId)
             .ConfigureAwait(false);
 
-        if (!encounteredExists)
+        if (encountered == null)
         {
             return [];
         }
 
-        var hrpData = await DbContext.UserProfileData.SingleOrDefaultAsync(u => u.UserUID == user.User.UID).ConfigureAwait(false);
+        var hrpRow = await DbContext.UserProfileData.SingleOrDefaultAsync(u => u.UserUID == user.User.UID).ConfigureAwait(false);
 
-        if (hrpData?.FlaggedForReport ?? false) return [];
-        if (hrpData?.ProfileDisabled ?? false) return [];
+        if (hrpRow?.FlaggedForReport ?? false) return [];
+        if (hrpRow?.ProfileDisabled ?? false) return [];
 
-        var rpProfiles = await DbContext.CharacterRpProfiles
-            .Where(u => u.UserUID == user.User.UID)
-            .ToListAsync()
-            .ConfigureAwait(false);
+        List<CharacterRpProfileData> rpProfiles;
+        if (isSelf || isPaired)
+        {
+            rpProfiles = await DbContext.CharacterRpProfiles
+                .Where(u => u.UserUID == user.User.UID)
+                .ToListAsync()
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            // Un inconnu ne reçoit que le personnage croisé, jamais les autres personnages du compte (pas de lien entre alts).
+            rpProfiles = [encountered];
+        }
+
+        var isDirectPaired = isPaired && rpProfiles.Any(p => p.Visibility == RpProfileVisibility.PairsOnly)
+            && await IsDirectPairedAsync(user.User.UID).ConfigureAwait(false);
+        rpProfiles = rpProfiles.Where(p => CanViewRpProfile(p.Visibility, isSelf, isPaired, isDirectPaired)).ToList();
+
+        var hrpData = isSelf || isPaired ? hrpRow : null;
 
         if (rpProfiles.Count == 0 && hrpData == null) return [];
 
-        return rpProfiles.Select(rpData => new UserProfileDto(user.User, false, hrpData?.IsNSFW, hrpData?.Base64ProfileImage, hrpData?.UserDescription,
-            rpData.RpProfilePictureBase64, rpData.RpDescription, rpData.IsRpNSFW,
-            rpData.RpFirstName, rpData.RpLastName, rpData.RpTitle, rpData.RpAge,
-            rpData.RpRace, rpData.RpEthnicity,
-            rpData.RpHeight, rpData.RpBuild, rpData.RpResidence, rpData.RpOccupation, rpData.RpAffiliation,
-            rpData.RpAlignment, rpData.RpAdditionalInfo,
-            rpData.RpNameColor,
-            rpData.RpCustomFields,
-            rpData.MoodlesData,
-            rpData.ChatIcon,
-            rpData.RpLevel,
-            rpData.CharacterName, rpData.WorldId)).ToList();
+        return rpProfiles.Select(rpData => ToUserProfileDto(user, hrpData, rpData, isSelf ? rpData.Visibility : null)).ToList();
+    }
+
+    private static UserProfileDto ToUserProfileDto(UserDto user, UserProfileData hrpData, CharacterRpProfileData rpData, RpProfileVisibility? visibility)
+    {
+        return new UserProfileDto(user.User, false, hrpData?.IsNSFW, hrpData?.Base64ProfileImage, hrpData?.UserDescription,
+            rpData?.RpProfilePictureBase64, rpData?.RpDescription, rpData?.IsRpNSFW,
+            rpData?.RpFirstName, rpData?.RpLastName, rpData?.RpTitle, rpData?.RpAge,
+            rpData?.RpRace, rpData?.RpEthnicity,
+            rpData?.RpHeight, rpData?.RpBuild, rpData?.RpResidence, rpData?.RpOccupation, rpData?.RpAffiliation,
+            rpData?.RpAlignment, rpData?.RpAdditionalInfo,
+            rpData?.RpNameColor,
+            rpData?.RpCustomFields,
+            rpData?.MoodlesData,
+            rpData?.ChatIcon,
+            rpData?.RpLevel,
+            rpData?.CharacterName, rpData?.WorldId,
+            visibility);
+    }
+
+    private static bool CanViewRpProfile(RpProfileVisibility visibility, bool isSelf, bool isPaired, bool isDirectPaired)
+    {
+        if (isSelf) return true;
+        return visibility switch
+        {
+            RpProfileVisibility.Public => true,
+            RpProfileVisibility.Hidden => false,
+            RpProfileVisibility.PairsOnly => isPaired && isDirectPaired,
+            _ => isPaired,
+        };
+    }
+
+    private async Task<bool> IsDirectPairedAsync(string uid)
+    {
+        var direct = await GetDirectPairedUnpausedUsers().ConfigureAwait(false);
+        return direct.Contains(uid, StringComparer.Ordinal);
     }
 
     [Authorize(Policy = "Identified")]
@@ -828,6 +869,7 @@ public partial class MareHub
                 if (dto.MoodlesData != null) existingRpData.MoodlesData = dto.MoodlesData;
                 if (dto.ChatIcon.HasValue) existingRpData.ChatIcon = dto.ChatIcon.Value;
                 if (dto.RpLevel.HasValue) existingRpData.RpLevel = dto.RpLevel.Value;
+                if (dto.RpVisibility is { } visibility && System.Enum.IsDefined(visibility)) existingRpData.Visibility = visibility;
             }
             else
             {
@@ -856,7 +898,8 @@ public partial class MareHub
                     RpCustomFields = dto.RpCustomFields ?? null,
                     MoodlesData = dto.MoodlesData ?? null,
                     ChatIcon = dto.ChatIcon ?? 0,
-                    RpLevel = dto.RpLevel ?? 0
+                    RpLevel = dto.RpLevel ?? 0,
+                    Visibility = dto.RpVisibility is { } newVisibility && System.Enum.IsDefined(newVisibility) ? newVisibility : RpProfileVisibility.PairsAndSyncshell
                 };
                 await DbContext.CharacterRpProfiles.AddAsync(rpProfileData).ConfigureAwait(false);
             }
