@@ -230,12 +230,14 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
             if (!alreadyStored)
             {
                 // Attribution : on réutilise l'uploader de la source (UID existant → pas de violation de FK).
-                var uploaderUid = await db.Files
+                // Il peut être null si le compte a été supprimé : le fichier source reste valide.
+                var source = await db.Files
                     .Where(f => f.Hash == sourceHash)
-                    .Select(f => f.UploaderUID)
+                    .Select(f => new { f.UploaderUID })
                     .FirstOrDefaultAsync(ct)
                     .ConfigureAwait(false);
-                if (string.IsNullOrEmpty(uploaderUid))
+                var uploaderUid = source?.UploaderUID;
+                if (source == null)
                 {
                     _logger.LogWarning("BC7: no FileCache row for source {Hash}, cannot attribute alternate", sourceHash);
                     await SetStateAsync(db, sourceHash, Bc7ConversionState.Failed, null, ct).ConfigureAwait(false);

@@ -149,6 +149,7 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
         var cacheDir = CacheDirectory;
         int synced = 0;
         int failed = 0;
+        int poisoned = 0;
 
         // Paralléliser avec un sémaphore pour limiter les uploads concurrents
         var semaphore = new SemaphoreSlim(10);
@@ -167,8 +168,11 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
                 var filePath = FilePathUtil.GetFilePath(cacheDir, file.Hash);
                 if (!File.Exists(filePath))
                 {
-                    _logger.LogWarning("S3 sync: file {Hash} not found on disk, skipping", file.Hash);
-                    Interlocked.Increment(ref failed);
+                    // Sans fichier local, la ligne bloquerait le worker indéfiniment (toujours parmi les plus anciennes).
+                    if (await ResolveMissingLocalFileAsync(file.Hash, file.Size, bucketName, ct).ConfigureAwait(false))
+                        Interlocked.Increment(ref synced);
+                    else
+                        Interlocked.Increment(ref poisoned);
                     return;
                 }
 
@@ -219,12 +223,44 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
 
-        if (synced > 0 || failed > 0)
+        if (synced > 0 || failed > 0 || poisoned > 0)
         {
-            _logger.LogInformation("S3 sync batch: {Synced} confirmed, {Failed} failed", synced, failed);
+            _logger.LogInformation("S3 sync batch: {Synced} confirmed, {Failed} failed, {Poisoned} missing locally (marked for re-upload)", synced, failed, poisoned);
         }
 
-        return unsyncedFiles.Count;
+        // Seules les lignes qui ont quitté la file comptent : si tout a échoué (S3 indisponible), le worker marque une pause
+        return synced + poisoned;
+    }
+
+    // Fichier absent du disque : s'il est déjà sur S3 (confirmation perdue), on confirme ; sinon la ligne est
+    // marquée Uploaded=false pour que le prochain FilesSend redemande le fichier à l'émetteur.
+    // Retourne true si la ligne a été confirmée.
+    private async Task<bool> ResolveMissingLocalFileAsync(string hash, long expectedSize, string bucketName, CancellationToken ct)
+    {
+        try
+        {
+            var metadata = await _s3Client!.GetObjectMetadataAsync(bucketName, GetS3Key(hash), ct).ConfigureAwait(false);
+            if (metadata.ContentLength == expectedSize)
+            {
+                _logger.LogInformation("S3 sync: {Hash} missing on disk but present on S3, confirming", hash);
+                await ConfirmS3Async(hash, ct).ConfigureAwait(false);
+                return true;
+            }
+        }
+        catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            // Absent de S3 aussi
+        }
+
+        _logger.LogWarning("S3 sync: file {Hash} not found on disk nor on S3, marking as not uploaded", hash);
+
+        using var scope = _services.CreateScope();
+        using var db = scope.ServiceProvider.GetRequiredService<MareDbContext>();
+        await db.Files
+            .Where(f => f.Hash == hash && !f.S3Confirmed)
+            .ExecuteUpdateAsync(s => s.SetProperty(f => f.Uploaded, false), ct)
+            .ConfigureAwait(false);
+        return false;
     }
 
 

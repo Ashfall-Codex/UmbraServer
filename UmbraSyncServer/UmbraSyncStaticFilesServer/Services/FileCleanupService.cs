@@ -26,6 +26,8 @@ public class FileCleanupService : IHostedService
     private readonly bool _isDistributionNode = false;
     private readonly bool _useColdStorage = false;
     private HashSet<string> _orphanedFiles = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _s3OrphanCandidates = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly IReadOnlySet<string> NoProtectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     private CancellationTokenSource _cleanupCts;
 
@@ -90,7 +92,7 @@ public class FileCleanupService : IHostedService
         return Task.CompletedTask;
     }
 
-    private List<string> CleanUpFilesBeyondSizeLimit(List<FileInfo> files, double sizeLimit, double minTTL, double maxTTL, CancellationToken ct)
+    private List<string> CleanUpFilesBeyondSizeLimit(List<FileInfo> files, double sizeLimit, double minTTL, double maxTTL, IReadOnlySet<string> protectedFiles, CancellationToken ct)
     {
         var removedFiles = new List<string>();
         if (sizeLimit <= 0)
@@ -145,6 +147,9 @@ public class FileCleanupService : IHostedService
 
             foreach (var (file, i) in files.Select((file, i) => ( file, i )))
             {
+                // Fichier pas encore confirmé sur S3 : c'est la seule copie, il ne doit pas être évincé
+                if (protectedFiles.Contains(file.Name)) continue;
+
                 double ttlProg = CalculateTTLProgression(file);
                 sortedFiles.Enqueue(file, (-ttlProg, i));
             }
@@ -157,8 +162,15 @@ public class FileCleanupService : IHostedService
                 var file = sortedFiles.Dequeue();
                 totalCacheSizeInBytes -= file.Length;
                 _logger.LogInformation("Deleting {file} with size {size:N2}MiB", file.FullName, ByteSize.FromBytes(file.Length).MebiBytes);
-                file.Delete();
-                removedFiles.Add(file.Name);
+                try
+                {
+                    file.Delete();
+                    removedFiles.Add(file.Name);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not delete {file}", file.FullName);
+                }
             }
             files.RemoveAll(f => removedFiles.Contains(f.Name, StringComparer.OrdinalIgnoreCase));
         }
@@ -197,7 +209,7 @@ public class FileCleanupService : IHostedService
         _orphanedFiles = newOrphanedFiles;
     }
 
-    private List<string> CleanUpOutdatedFiles(List<FileInfo> files, int unusedRetention, int forcedDeletionAfterHours, CancellationToken ct)
+    private List<string> CleanUpOutdatedFiles(List<FileInfo> files, int unusedRetention, int forcedDeletionAfterHours, IReadOnlySet<string> protectedFiles, CancellationToken ct)
     {
         var removedFiles = new List<string>();
         try
@@ -213,6 +225,13 @@ public class FileCleanupService : IHostedService
 
             foreach (var file in files)
             {
+                if (protectedFiles.Contains(file.Name))
+                {
+                    if (file.LastAccessTime < lastAccessCutoffTime || (forcedDeletionAfterHours > 0 && file.LastWriteTime < forcedDeletionCutoffTime))
+                        _logger.LogInformation("File outdated but not yet confirmed on S3, kept: {fileName}", file.Name);
+                    continue;
+                }
+
                 if (file.LastAccessTime < lastAccessCutoffTime)
                 {
                     _logger.LogInformation("File outdated: {fileName}, {fileSize:N2}MiB", file.Name, ByteSize.FromBytes(file.Length).MebiBytes);
@@ -256,13 +275,29 @@ public class FileCleanupService : IHostedService
                 using var dbContext = _isMain ? scope.ServiceProvider.GetService<MareDbContext>()! : null;
 
                 HashSet<string> allDbFileHashes = null;
+                IReadOnlySet<string> unconfirmedOnS3 = NoProtectedFiles;
 
                 // Database operations only performed on main server
                 if (_isMain)
                 {
-                    var allDbFiles = await dbContext.Files.ToListAsync(ct).ConfigureAwait(false);
+                    var allDbFiles = await dbContext.Files.AsNoTracking()
+                        .Select(f => new { f.Hash, f.Uploaded, f.S3Confirmed })
+                        .ToListAsync(ct).ConfigureAwait(false);
                     allDbFileHashes = new HashSet<string>(allDbFiles.Select(a => a.Hash), StringComparer.OrdinalIgnoreCase);
+
+                    // Avec S3, un fichier envoyé mais pas encore confirmé sur S3 n'existe que sur ce disque :
+                    // l'évincer créerait une ligne « fantôme » que plus personne ne peut servir.
+                    if (_scaleway.IsEnabled)
+                    {
+                        unconfirmedOnS3 = allDbFiles.Where(f => f.Uploaded && !f.S3Confirmed)
+                            .Select(f => f.Hash)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    }
                 }
+
+                // Les uploads sont écrits dans le stockage froid s'il existe, sinon dans le chaud
+                var coldProtected = _useColdStorage ? unconfirmedOnS3 : NoProtectedFiles;
+                var hotProtected = _useColdStorage ? NoProtectedFiles : unconfirmedOnS3;
 
                 if (_useColdStorage)
                 {
@@ -270,10 +305,10 @@ public class FileCleanupService : IHostedService
                     var removedColdFiles = new List<string>();
 
                     removedColdFiles.AddRange(
-                        CleanUpOutdatedFiles(coldFiles, ColdStorageRetention, ForcedDeletionAfterHours, ct)
+                        CleanUpOutdatedFiles(coldFiles, ColdStorageRetention, ForcedDeletionAfterHours, coldProtected, ct)
                     );
                     removedColdFiles.AddRange(
-                        CleanUpFilesBeyondSizeLimit(coldFiles, ColdStorageSize, ColdStorageMinimumRetention, ColdStorageRetention, ct)
+                        CleanUpFilesBeyondSizeLimit(coldFiles, ColdStorageSize, ColdStorageMinimumRetention, ColdStorageRetention, coldProtected, ct)
                     );
 
                     // Remove cold storage files are deleted from the database, if we are the main file server
@@ -301,10 +336,10 @@ public class FileCleanupService : IHostedService
                 var removedHotFiles = new List<string>();
 
                 removedHotFiles.AddRange(
-                    CleanUpOutdatedFiles(hotFiles, HotStorageRetention, forcedDeletionAfterHours: _useColdStorage ? ForcedDeletionAfterHours : -1, ct)
+                    CleanUpOutdatedFiles(hotFiles, HotStorageRetention, forcedDeletionAfterHours: _useColdStorage ? ForcedDeletionAfterHours : -1, hotProtected, ct)
                 );
                 removedHotFiles.AddRange(
-                    CleanUpFilesBeyondSizeLimit(hotFiles, HotStorageSize, HotStorageMinimumRetention, HotStorageRetention, ct)
+                    CleanUpFilesBeyondSizeLimit(hotFiles, HotStorageSize, HotStorageMinimumRetention, HotStorageRetention, hotProtected, ct)
                 );
 
                 if (_isMain)
@@ -380,7 +415,26 @@ public class FileCleanupService : IHostedService
                         try
                         {
                             s3Hashes ??= await _scaleway.GetS3HashSetAsync(ct).ConfigureAwait(false);
-                            var s3Orphans = s3Hashes.Where(h => !allDbFileHashes.Contains(h)).ToList();
+                            var s3OrphanCandidates = s3Hashes.Where(h => !allDbFileHashes.Contains(h)).ToList();
+
+                            // Le snapshot de la base précède le listing S3 : un fichier envoyé entre les deux
+                            // apparaîtrait orphelin. On relit la base, et on n'efface qu'un orphelin déjà vu au passage précédent.
+                            var nowInDb = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            foreach (var chunk in s3OrphanCandidates.Chunk(1000))
+                            {
+                                var chunkList = chunk.ToList();
+                                nowInDb.UnionWith(await dbContext.Files.AsNoTracking()
+                                    .Where(f => chunkList.Contains(f.Hash))
+                                    .Select(f => f.Hash)
+                                    .ToListAsync(ct).ConfigureAwait(false));
+                            }
+
+                            var stillOrphans = s3OrphanCandidates.Where(h => !nowInDb.Contains(h)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                            var s3Orphans = stillOrphans.Where(_s3OrphanCandidates.Contains).ToList();
+                            var newCandidates = stillOrphans.Count - s3Orphans.Count;
+                            _s3OrphanCandidates = stillOrphans;
+                            if (newCandidates > 0)
+                                _logger.LogInformation("Cleanup: {Count} new orphan candidate(s) on S3, will be deleted next run if still orphaned", newCandidates);
 
                             if (s3Orphans.Count > 0)
                             {
