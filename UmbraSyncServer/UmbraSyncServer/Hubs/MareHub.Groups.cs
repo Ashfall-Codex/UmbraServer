@@ -64,6 +64,7 @@ public partial class MareHub
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
 
         var groupPairs = DbContext.GroupPairs.Where(p => p.GroupGID == dto.Group.GID).Select(p => p.GroupUserUID).ToList();
+        _pairCacheService.InvalidateUsers(groupPairs);
         await Clients.Users(groupPairs).Client_GroupChangePermissions(new GroupPermissionDto(dto.Group, dto.Permissions)).ConfigureAwait(false);
     }
 
@@ -92,6 +93,8 @@ public partial class MareHub
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
 
         var groupPairs = DbContext.GroupPairs.Include(p => p.GroupUser).Where(p => p.GroupGID == dto.Group.GID).ToList();
+        if (wasPaused != groupPrefs.IsPaused)
+            _pairCacheService.InvalidateUsers(groupPairs.Select(p => p.GroupUserUID).Append(UserUID));
         await Clients.Users(groupPairs.Select(p => p.GroupUserUID)).Client_GroupPairChangePermissions(dto).ConfigureAwait(false);
 
         var allUserPairs = await GetAllPairedClientsWithPauseState().ConfigureAwait(false);
@@ -295,6 +298,8 @@ public partial class MareHub
 
         DbContext.GroupPairs.RemoveRange(notPinned);
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
+
+        _pairCacheService.InvalidateUsers(groupPairs.Select(p => p.GroupUserUID));
 
         foreach (var pair in notPinned)
         {
@@ -531,6 +536,8 @@ public partial class MareHub
         DbContext.RemoveRange(groupPairs);
         DbContext.Remove(group);
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
+
+        _pairCacheService.InvalidateUsers(groupPairs.Select(p => p.GroupUserUID));
 
         await Clients.Users(groupPairs.Select(g => g.GroupUserUID)).Client_GroupDelete(new GroupDto(group.ToGroupData())).ConfigureAwait(false);
 
@@ -1021,6 +1028,8 @@ public partial class MareHub
 
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
 
+        _pairCacheService.InvalidateUsers(allGroupUsers.Select(p => p.GroupUserUID));
+
         return usersToPrune.Count();
     }
 
@@ -1042,6 +1051,7 @@ public partial class MareHub
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
 
         var groupPairs = DbContext.GroupPairs.Where(p => p.GroupGID == group.GID).AsNoTracking().ToList();
+        _pairCacheService.InvalidateUsers(groupPairs.Select(p => p.GroupUserUID).Append(dto.User.UID));
         await Clients.Users(groupPairs.Select(p => p.GroupUserUID)).Client_GroupPairLeft(dto).ConfigureAwait(false);
 
         var sharedData = await DbContext.CharaDataAllowances.Where(u => u.AllowedGroup != null && u.AllowedGroupGID == dto.GID && u.ParentUploaderUID == dto.UID).ToListAsync().ConfigureAwait(false);

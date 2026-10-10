@@ -145,7 +145,10 @@ public static class SharedDbFunctions
 
         dbContext.WildRpAnnouncements.RemoveRange(await dbContext.WildRpAnnouncements.Where(a => a.UserUID == uid).ToListAsync().ConfigureAwait(false));
 
-        dbContext.Files.RemoveRange(await dbContext.Files.Where(f => f.UploaderUID == uid).ToListAsync().ConfigureAwait(false));
+        // Les fichiers sont adressés par leur contenu et servent à tous les joueurs qui utilisent le même mod :
+        // on retire seulement l'attribution au compte supprimé, sans effacer le fichier.
+        await dbContext.Files.Where(f => f.UploaderUID == uid)
+            .ExecuteUpdateAsync(s => s.SetProperty(f => f.UploaderUID, (string)null)).ConfigureAwait(false);
 
         // Les signalements ne peuvent pas être anonymisés (clé étrangère vers users) : ils sont supprimés.
         dbContext.UserProfileReports.RemoveRange(await dbContext.UserProfileReports

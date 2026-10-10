@@ -5,7 +5,7 @@ namespace MareSynchronosAuthService.Services.Discovery;
 public sealed class InMemoryPresenceStore : IDiscoveryPresenceStore
 {
     private readonly ConcurrentDictionary<string, (string Uid, DateTimeOffset ExpiresAt, string? DisplayName, bool AllowRequests)> _presence = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, (string TargetUid, DateTimeOffset ExpiresAt)> _tokens = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, (string TargetUid, string RequesterUid, DateTimeOffset ExpiresAt)> _tokens = new(StringComparer.Ordinal);
     private readonly TimeSpan _presenceTtl;
     private readonly TimeSpan _tokenTtl;
     private readonly Timer _cleanupTimer;
@@ -56,13 +56,11 @@ public sealed class InMemoryPresenceStore : IDiscoveryPresenceStore
         }
     }
 
-public (bool Found, string? Token, string TargetUid, string? DisplayName) TryMatchAndIssueToken(string requesterUid, string hash)
-{
-    if (_presence.TryGetValue(hash, out var entry))
+    // Seule la publication du joueur lui-même prolonge sa présence : interroger quelqu'un ne le garde pas découvrable.
+    public (bool Found, string? Token, string TargetUid, string? DisplayName) TryMatchAndIssueToken(string requesterUid, string hash)
     {
-        // Refresh TTL for this presence whenever it is matched (regardless of AllowRequests)
-        var refreshed = (entry.Uid, DateTimeOffset.UtcNow.Add(_presenceTtl), entry.DisplayName, entry.AllowRequests);
-        _presence[hash] = refreshed;
+        if (!_presence.TryGetValue(hash, out var entry) || entry.ExpiresAt <= DateTimeOffset.UtcNow)
+            return (false, null, string.Empty, null);
 
         if (string.Equals(entry.Uid, requesterUid, StringComparison.Ordinal))
             return (false, null, string.Empty, null);
@@ -72,37 +70,32 @@ public (bool Found, string? Token, string TargetUid, string? DisplayName) TryMat
             return (true, null, entry.Uid, entry.DisplayName);
 
         var token = Guid.NewGuid().ToString("N");
-        _tokens[token] = (entry.Uid, DateTimeOffset.UtcNow.Add(_tokenTtl));
+        _tokens[token] = (entry.Uid, requesterUid, DateTimeOffset.UtcNow.Add(_tokenTtl));
         return (true, token, entry.Uid, entry.DisplayName);
     }
-    return (false, null, string.Empty, null);
-}
 
-    public bool ValidateToken(string token, out string targetUid)
+    public bool ConsumeToken(string token, string requesterUid, out string targetUid)
     {
         targetUid = string.Empty;
-        if (_tokens.TryGetValue(token, out var info))
+        // TryRemove d'abord : deux requêtes simultanées ne peuvent pas utiliser le même jeton
+        if (!_tokens.TryRemove(token, out var info)) return false;
+        if (info.ExpiresAt <= DateTimeOffset.UtcNow) return false;
+        if (!string.Equals(info.RequesterUid, requesterUid, StringComparison.Ordinal)) return false;
+
+        targetUid = info.TargetUid;
+        return true;
+    }
+
+    public string? GetPublishedDisplayName(string uid)
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var kv in _presence)
         {
-            if (info.ExpiresAt > DateTimeOffset.UtcNow)
-            {
-                targetUid = info.TargetUid;
-
-                // Optional robustness: refresh TTL for all presence entries of this target
-                var newExp = DateTimeOffset.UtcNow.Add(_presenceTtl);
-                foreach (var kv in _presence.ToArray())
-                {
-                    if (string.Equals(kv.Value.Uid, targetUid, StringComparison.Ordinal))
-                    {
-                        var v = kv.Value;
-                        _presence[kv.Key] = (v.Uid, newExp, v.DisplayName, v.AllowRequests);
-                    }
-                }
-
-                return true;
-            }
-            _tokens.TryRemove(token, out _);
+            if (string.Equals(kv.Value.Uid, uid, StringComparison.Ordinal) && kv.Value.ExpiresAt > now && !string.IsNullOrWhiteSpace(kv.Value.DisplayName))
+                return kv.Value.DisplayName;
         }
-        return false;
+
+        return null;
     }
 }
 

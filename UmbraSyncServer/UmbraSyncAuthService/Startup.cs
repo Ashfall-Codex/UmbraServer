@@ -83,7 +83,27 @@ public class Startup
         services.Configure<MareConfigurationBase>(_configuration.GetRequiredSection("MareSynchronos"));
 
         services.AddSingleton<ServerTokenGenerator>();
-        // Nearby discovery services (well-known + presence)
+        ConfigureNearbyDiscovery(services);
+
+        ConfigureAuthorization(services);
+
+        ConfigureDatabase(services, mareConfig);
+
+        ConfigureConfigServices(services);
+
+        ConfigureMetrics(services);
+
+        services.AddHealthChecks();
+        services.AddControllers().ConfigureApplicationPartManager(a =>
+        {
+            a.FeatureProviders.Remove(a.FeatureProviders.OfType<ControllerFeatureProvider>().First());
+            a.FeatureProviders.Add(new AllowedControllersFeatureProvider(typeof(JwtController), typeof(WellKnownController), typeof(DiscoveryController)));
+        });
+    }
+
+    // Découverte à proximité : well-known, store de présence, relais HTTP vers le hub
+    private void ConfigureNearbyDiscovery(IServiceCollection services)
+    {
         services.AddSingleton<DiscoveryWellKnownProvider>();
         services.AddHostedService(p => p.GetRequiredService<DiscoveryWellKnownProvider>());
 
@@ -105,23 +125,14 @@ public class Startup
             services.AddSingleton<MareSynchronosAuthService.Services.Discovery.IDiscoveryPresenceStore>(sp => new MareSynchronosAuthService.Services.Discovery.InMemoryPresenceStore(presenceTtl, tokenTtl));
         }
 
+        services.AddHttpClient(DiscoveryController.RelayHttpClientName, client =>
+        {
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("UmbraAuthService/1.0");
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
+
         services.AddSingleton<DiscoveryPresenceService>();
         services.AddHostedService(p => p.GetRequiredService<DiscoveryPresenceService>());
-
-        ConfigureAuthorization(services);
-
-        ConfigureDatabase(services, mareConfig);
-
-        ConfigureConfigServices(services);
-
-        ConfigureMetrics(services);
-
-        services.AddHealthChecks();
-        services.AddControllers().ConfigureApplicationPartManager(a =>
-        {
-            a.FeatureProviders.Remove(a.FeatureProviders.OfType<ControllerFeatureProvider>().First());
-            a.FeatureProviders.Add(new AllowedControllersFeatureProvider(typeof(JwtController), typeof(WellKnownController), typeof(DiscoveryController)));
-        });
     }
 
     private static void ConfigureAuthorization(IServiceCollection services)

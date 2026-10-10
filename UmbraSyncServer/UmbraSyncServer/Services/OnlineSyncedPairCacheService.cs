@@ -2,10 +2,15 @@ using MareSynchronosShared.Metrics;
 
 namespace MareSynchronosServer.Services;
 
+// Cache des destinataires autorisés par émetteur, pour éviter de recalculer les paires à chaque push.
+// Un utilisateur peut avoir plusieurs connexions (reconnexion avant la fin de l'ancienne) : l'entrée est
+// comptée par référence et n'est libérée qu'à la dernière déconnexion.
+// Toute perte de droit (retrait de paire, pause, exclusion de syncshell) doit appeler InvalidateUsers,
+// sinon l'ancien destinataire continue de recevoir les données jusqu'à expiration du cache.
 public class OnlineSyncedPairCacheService
 {
-    private readonly Dictionary<string, PairCache> _userCaches = new(StringComparer.Ordinal);
-    private readonly SemaphoreSlim _cacheModificationSemaphore = new(1);
+    private readonly Dictionary<string, PairCacheEntry> _userCaches = new(StringComparer.Ordinal);
+    private readonly Lock _cachesLock = new();
     private readonly ILogger<OnlineSyncedPairCacheService> _logger;
     private readonly ILoggerFactory _loggerFactory;
     private readonly MareMetrics _mareMetrics;
@@ -20,86 +25,140 @@ public class OnlineSyncedPairCacheService
         _mareMetrics = mareMetrics;
     }
 
-    public async Task InitPlayer(string userUid)
+    public Task InitPlayer(string userUid)
     {
-        if (_userCaches.ContainsKey(userUid)) return;
-
-        await _cacheModificationSemaphore.WaitAsync().ConfigureAwait(false);
-        try
+        lock (_cachesLock)
         {
-            if (_userCaches.ContainsKey(userUid)) return;
-
-            _logger.LogDebug("PairCache:Init {UserUid}", userUid);
-            _userCaches[userUid] = new PairCache(
-                _loggerFactory.CreateLogger<PairCache>(),
-                userUid,
-                _mareMetrics);
-
-            _mareMetrics.IncGauge(MetricsAPI.GaugePairCacheUsers);
+            var entry = GetOrCreateEntry(userUid);
+            entry.RefCount++;
         }
-        finally
-        {
-            _cacheModificationSemaphore.Release();
-        }
+
+        return Task.CompletedTask;
     }
 
-    public async Task DisposePlayer(string userUid)
+    public Task DisposePlayer(string userUid)
     {
-        if (!_userCaches.ContainsKey(userUid)) return;
-
-        await _cacheModificationSemaphore.WaitAsync().ConfigureAwait(false);
-        try
+        lock (_cachesLock)
         {
-            if (_userCaches.Remove(userUid, out var pairCache))
+            if (!_userCaches.TryGetValue(userUid, out var entry)) return Task.CompletedTask;
+
+            entry.RefCount--;
+            if (entry.RefCount <= 0)
             {
-                _logger.LogDebug("PairCache:Dispose {UserUid}", userUid);
-                pairCache.Dispose();
-                _mareMetrics.DecGauge(MetricsAPI.GaugePairCacheUsers);
+                RemoveEntry(userUid, entry);
             }
         }
-        finally
-        {
-            _cacheModificationSemaphore.Release();
-        }
+
+        return Task.CompletedTask;
     }
 
-    public async Task<bool> AreAllPlayersCached(string senderUid, List<string> recipientUids, CancellationToken ct)
+    // Suppression immédiate, quel que soit le nombre de connexions (suppression de compte).
+    public Task RemovePlayer(string userUid)
     {
-        if (!_userCaches.ContainsKey(senderUid))
+        lock (_cachesLock)
         {
-            await InitPlayer(senderUid).ConfigureAwait(false);
+            if (_userCaches.TryGetValue(userUid, out var entry))
+            {
+                RemoveEntry(userUid, entry);
+            }
         }
 
-        if (_userCaches.TryGetValue(senderUid, out var pairCache))
-        {
-            return await pairCache.AreAllPlayersCached(recipientUids, ct).ConfigureAwait(false);
-        }
-
-        return false;
+        return Task.CompletedTask;
     }
 
-    public async Task CachePlayers(string senderUid, List<string> validPairUids, CancellationToken ct)
+    // Vide le cache des utilisateurs donnés : leur prochain push recalcule les destinataires depuis la base.
+    // À appeler avec les deux côtés d'une relation qui perd un droit (A et B, ou le membre exclu et toute la syncshell).
+    public void InvalidateUsers(IEnumerable<string> userUids)
     {
-        if (!_userCaches.ContainsKey(senderUid))
+        int invalidated = 0;
+        lock (_cachesLock)
         {
-            await InitPlayer(senderUid).ConfigureAwait(false);
+            foreach (var uid in userUids.Distinct(StringComparer.Ordinal))
+            {
+                if (_userCaches.TryGetValue(uid, out var entry))
+                {
+                    entry.Cache.Clear();
+                    invalidated++;
+                }
+            }
         }
 
-        if (_userCaches.TryGetValue(senderUid, out var pairCache))
+        if (invalidated > 0)
+            _logger.LogDebug("PairCache:Invalidate count={Count}", invalidated);
+    }
+
+    public Task<bool> AreAllPlayersCached(string senderUid, List<string> recipientUids, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        PairCache cache;
+        lock (_cachesLock)
         {
-            await pairCache.CachePlayers(validPairUids, ct).ConfigureAwait(false);
+            cache = GetOrCreateEntry(senderUid).Cache;
+        }
+
+        return Task.FromResult(cache.AreAllPlayersCached(recipientUids));
+    }
+
+    public Task CachePlayers(string senderUid, List<string> validPairUids, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        PairCache cache;
+        lock (_cachesLock)
+        {
+            cache = GetOrCreateEntry(senderUid).Cache;
+        }
+
+        cache.CachePlayers(validPairUids);
+        return Task.CompletedTask;
+    }
+
+    public int GetCachedUserCount()
+    {
+        lock (_cachesLock)
+        {
+            return _userCaches.Count;
         }
     }
 
-    public int GetCachedUserCount() => _userCaches.Count;
+    // Appelé sous _cachesLock. Une entrée créée par un push sans InitPlayer préalable a RefCount = 0
+    // et sera libérée par le prochain DisposePlayer.
+    private PairCacheEntry GetOrCreateEntry(string userUid)
+    {
+        if (!_userCaches.TryGetValue(userUid, out var entry))
+        {
+            _logger.LogDebug("PairCache:Init {UserUid}", userUid);
+            entry = new PairCacheEntry(new PairCache(_loggerFactory.CreateLogger<PairCache>(), userUid, _mareMetrics));
+            _userCaches[userUid] = entry;
+            _mareMetrics.IncGauge(MetricsAPI.GaugePairCacheUsers);
+        }
 
-    private sealed class PairCache : IDisposable
+        return entry;
+    }
+
+    // Appelé sous _cachesLock.
+    private void RemoveEntry(string userUid, PairCacheEntry entry)
+    {
+        _userCaches.Remove(userUid);
+        _logger.LogDebug("PairCache:Dispose {UserUid}", userUid);
+        entry.Cache.Clear();
+        _mareMetrics.DecGauge(MetricsAPI.GaugePairCacheUsers);
+    }
+
+    private sealed class PairCacheEntry(PairCache cache)
+    {
+        public PairCache Cache { get; } = cache;
+        public int RefCount { get; set; }
+    }
+
+    private sealed class PairCache
     {
         private readonly ILogger<PairCache> _logger;
         private readonly string _ownerUid;
         private readonly MareMetrics _metrics;
         private readonly Dictionary<string, DateTime> _cachedPairs = new(StringComparer.Ordinal);
-        private readonly SemaphoreSlim _lock = new(1);
+        private readonly Lock _lock = new();
 
         private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(60);
 
@@ -110,10 +169,9 @@ public class OnlineSyncedPairCacheService
             _metrics = metrics;
         }
 
-        public async Task<bool> AreAllPlayersCached(List<string> uids, CancellationToken ct)
+        public bool AreAllPlayersCached(List<string> uids)
         {
-            await _lock.WaitAsync(ct).ConfigureAwait(false);
-            try
+            lock (_lock)
             {
                 var now = DateTime.UtcNow;
                 var allCached = uids.TrueForAll(uid =>
@@ -129,18 +187,14 @@ public class OnlineSyncedPairCacheService
 
                 return allCached;
             }
-            finally
-            {
-                _lock.Release();
-            }
         }
 
-        public async Task CachePlayers(List<string> uids, CancellationToken ct)
+        public void CachePlayers(List<string> uids)
         {
-            await _lock.WaitAsync(ct).ConfigureAwait(false);
-            try
+            lock (_lock)
             {
-                var expiry = DateTime.UtcNow.Add(CacheDuration);
+                var now = DateTime.UtcNow;
+                var expiry = now.Add(CacheDuration);
                 var newEntries = 0;
 
                 foreach (var uid in uids)
@@ -157,7 +211,7 @@ public class OnlineSyncedPairCacheService
                 _metrics.IncGauge(MetricsAPI.GaugePairCacheEntries, newEntries);
 
                 var expiredKeys = _cachedPairs
-                    .Where(kvp => kvp.Value < DateTime.UtcNow)
+                    .Where(kvp => kvp.Value < now)
                     .Select(kvp => kvp.Key)
                     .ToList();
 
@@ -173,16 +227,15 @@ public class OnlineSyncedPairCacheService
                         _ownerUid, expiredKeys.Count);
                 }
             }
-            finally
-            {
-                _lock.Release();
-            }
         }
 
-        public void Dispose()
+        public void Clear()
         {
-            _metrics.DecGauge(MetricsAPI.GaugePairCacheEntries, _cachedPairs.Count);
-            _lock.Dispose();
+            lock (_lock)
+            {
+                _metrics.DecGauge(MetricsAPI.GaugePairCacheEntries, _cachedPairs.Count);
+                _cachedPairs.Clear();
+            }
         }
     }
 }

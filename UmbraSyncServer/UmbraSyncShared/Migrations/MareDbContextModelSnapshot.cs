@@ -1575,6 +1575,31 @@ namespace MareSynchronosServer.Migrations
                     b.ToTable("users", (string)null);
                 });
 
+            modelBuilder.Entity("MareSynchronosShared.Models.UserBlock", b =>
+                {
+                    b.Property<string>("UserUID")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("user_uid");
+
+                    b.Property<string>("BlockedUserUID")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("blocked_user_uid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.HasKey("UserUID", "BlockedUserUID")
+                        .HasName("pk_user_blocks");
+
+                    b.HasIndex("BlockedUserUID")
+                        .HasDatabaseName("ix_user_blocks_blocked_user_uid");
+
+                    b.ToTable("user_blocks", (string)null);
+                });
+
             modelBuilder.Entity("MareSynchronosShared.Models.UserDefaultPreferredPermission", b =>
                 {
                     b.Property<string>("UserUID")
@@ -1987,6 +2012,7 @@ namespace MareSynchronosServer.Migrations
                     b.HasOne("MareSynchronosShared.Models.User", "Uploader")
                         .WithMany()
                         .HasForeignKey("UploaderUID")
+                        .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_file_caches_users_uploader_uid");
 
                     b.Navigation("Uploader");
@@ -2233,6 +2259,27 @@ namespace MareSynchronosServer.Migrations
                         .HasConstraintName("fk_slots_groups_group_gid");
 
                     b.Navigation("Group");
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.UserBlock", b =>
+                {
+                    b.HasOne("MareSynchronosShared.Models.User", "BlockedUser")
+                        .WithMany()
+                        .HasForeignKey("BlockedUserUID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_user_blocks_users_blocked_user_uid");
+
+                    b.HasOne("MareSynchronosShared.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserUID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_user_blocks_users_user_uid");
+
+                    b.Navigation("BlockedUser");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("MareSynchronosShared.Models.UserDefaultPreferredPermission", b =>

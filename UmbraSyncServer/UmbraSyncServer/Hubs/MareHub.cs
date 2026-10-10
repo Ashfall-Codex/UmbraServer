@@ -208,13 +208,10 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
             isFirstConnection = connections.Length == 1;
         }).ConfigureAwait(false);
 
-        if (isFirstConnection || characterSwitched)
-        {
-            await SafeLifecycleStep("SendOnlineToAllPairedUsers", async () => { _ = await SendOnlineToAllPairedUsers().ConfigureAwait(false); }).ConfigureAwait(false);
-        }
-
         // Note: pas de push Client_UserSendOnline ici. Le client appelle UserGetOnlinePairs
-        // immédiatement après OnConnectedAsync et peuple ses paires via MarkPairOnline(sendNotif:false).
+        // immédiatement après OnConnectedAsync (connexion et reconnexion) : c'est lui qui annonce
+        // l'utilisateur en ligne à ses paires. Un second envoi ici faisait réappliquer chaque paire deux fois.
+        // Le client peuple ses paires via MarkPairOnline(sendNotif:false).
         // L'ancienne boucle séquentielle (1 RPC par paire) bloquait OnConnectedAsync ~35ms × N paires,
         // ce qui dépassait les ~5s pour les users à >140 paires (ex. 175 paires = 6s) et causait
         // des déconnexions WS systématiques.
@@ -288,8 +285,10 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
             await SafeLifecycleStep("WildRpWithdraw", async () => { _ = await WildRpWithdraw().ConfigureAwait(false); }).ConfigureAwait(false);
             await SafeLifecycleStep("RemoveUserFromRedis", () => RemoveUserFromRedis()).ConfigureAwait(false);
             await SafeLifecycleStep("SendOfflineToAllPairedUsers", async () => { _ = await SendOfflineToAllPairedUsers().ConfigureAwait(false); }).ConfigureAwait(false);
-            await SafeLifecycleStep("DisposePlayer", () => _pairCacheService.DisposePlayer(UserUID)).ConfigureAwait(false);
         }
+
+        // Symétrique de InitPlayer (une référence par connexion) : le cache n'est libéré qu'à la dernière connexion.
+        await SafeLifecycleStep("DisposePlayer", () => _pairCacheService.DisposePlayer(UserUID)).ConfigureAwait(false);
 
         SafeLifecycleStep("RemoveTypingGroups", () => { TypingGroupsByConnection.TryRemove(Context.ConnectionId, out _); });
 

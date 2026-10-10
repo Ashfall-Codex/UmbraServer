@@ -144,5 +144,15 @@ public partial class MareHub
         }
 
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
+
+        // Une pause (individuelle ou par syncshell) retire des destinataires : le cache doit être recalculé des deux côtés.
+        var affectedGroupGids = dto.AffectedGroups.Keys.ToList();
+        var affectedGroupMembers = affectedGroupGids.Count == 0
+            ? new List<string>()
+            : await DbContext.GroupPairs.AsNoTracking()
+                .Where(g => affectedGroupGids.Contains(g.GroupGID))
+                .Select(g => g.GroupUserUID)
+                .ToListAsync().ConfigureAwait(false);
+        _pairCacheService.InvalidateUsers(dto.AffectedUsers.Keys.Concat(affectedGroupMembers).Append(UserUID));
     }
 }

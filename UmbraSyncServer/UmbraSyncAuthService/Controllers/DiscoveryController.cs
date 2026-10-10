@@ -1,9 +1,11 @@
 using System.Text.Json.Serialization;
 using MareSynchronosAuthService.Services;
+using MareSynchronosShared.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
+using StackExchange.Redis;
 
 namespace MareSynchronosAuthService.Controllers;
 
@@ -12,16 +14,39 @@ namespace MareSynchronosAuthService.Controllers;
 [Route("discovery")]
 public class DiscoveryController : Controller
 {
+    public const string RelayHttpClientName = "discovery-relay";
+
+    // Le client interroge toutes les 2 s par lots de 100 hashes (politique publiée par le well-known) :
+    // 60 requêtes/min laissent passer deux lots par cycle en lieu bondé, pas une énumération massive.
+    private const int MaxHashesPerQuery = 100;
+    private const int QueryMaxPerMinute = 60;
+    private const int RequestMaxPerMinute = 10;
+    private static readonly TimeSpan RequestBurst = TimeSpan.FromSeconds(3);
+    private const int AcceptMaxPerMinute = 20;
+
     private readonly DiscoveryWellKnownProvider _provider;
     private readonly DiscoveryPresenceService _presence;
     private readonly IConfiguration _configuration;
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IConnectionMultiplexer _redis;
+    private readonly ServerTokenGenerator _serverTokenGenerator;
+    private readonly ILogger<DiscoveryController> _logger;
 
-    public DiscoveryController(DiscoveryWellKnownProvider provider, DiscoveryPresenceService presence, IConfiguration configuration)
+    public DiscoveryController(DiscoveryWellKnownProvider provider, DiscoveryPresenceService presence, IConfiguration configuration,
+        IHttpClientFactory httpClientFactory, IConnectionMultiplexer redis, ServerTokenGenerator serverTokenGenerator, ILogger<DiscoveryController> logger)
     {
         _provider = provider;
         _presence = presence;
         _configuration = configuration;
+        _httpClientFactory = httpClientFactory;
+        _redis = redis;
+        _serverTokenGenerator = serverTokenGenerator;
+        _logger = logger;
     }
+
+    private string CallerUid => User?.Claims?.FirstOrDefault(c => c.Type == MareClaimTypes.Uid)?.Value ?? string.Empty;
+
+    private IActionResult TooManyRequests() => StatusCode(StatusCodes.Status429TooManyRequests, new { code = "RATE_LIMITED" });
 
     public sealed class QueryRequest
     {
@@ -38,19 +63,23 @@ public class DiscoveryController : Controller
     }
 
     [HttpPost("query")]
-    public IActionResult Query([FromBody] QueryRequest req)
+    public async Task<IActionResult> Query([FromBody] QueryRequest req)
     {
+        if (req == null) return BadRequest();
         if (_provider.IsExpired(req.SaltB64))
         {
             return BadRequest(new { code = "DISCOVERY_SALT_EXPIRED" });
         }
 
-        var uid = User?.Claims?.FirstOrDefault(c => c.Type == MareSynchronosShared.Utils.MareClaimTypes.Uid)?.Value ?? string.Empty;
-        if (string.IsNullOrEmpty(uid) || req?.Hashes == null || req.Hashes.Length == 0)
+        var uid = CallerUid;
+        if (string.IsNullOrEmpty(uid) || req.Hashes == null || req.Hashes.Length == 0)
             return Json(Array.Empty<QueryResponseEntry>());
 
+        if (!await RedisRateLimiter.TryAcquireAsync(_redis.GetDatabase(), "ndquery", uid, QueryMaxPerMinute, TimeSpan.FromMinutes(1)).ConfigureAwait(false))
+            return TooManyRequests();
+
         List<QueryResponseEntry> matches = new();
-        foreach (var h in req.Hashes.Distinct(StringComparer.Ordinal))
+        foreach (var h in req.Hashes.Distinct(StringComparer.Ordinal).Take(MaxHashesPerQuery))
         {
             var (found, token, targetUid, displayName) = _presence.TryMatchAndIssueToken(uid, h);
             if (found)
@@ -62,89 +91,92 @@ public class DiscoveryController : Controller
         return Json(matches);
     }
 
+    // Le client envoie aussi « targetUid » et « displayName » : ils sont ignorés. La cible vient du jeton,
+    // le nom affiché est résolu ici, jamais pris tel que déclaré par l'émetteur.
     public sealed class RequestDto
     {
         [JsonPropertyName("token")] public string Token { get; set; } = string.Empty;
-        [JsonPropertyName("displayName")] public string? DisplayName { get; set; }
     }
 
     [HttpPost("request")]
-    public async Task<IActionResult> RequestPair([FromBody] RequestDto req)
+    public async Task<IActionResult> RequestPair([FromBody] RequestDto req, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(req.Token)) return BadRequest();
-        if (_presence.ValidateToken(req.Token, out var targetUid))
-        {
-            // Phase 3 (minimal): notify target via mare-server internal controller
-            try
-            {
-                var fromUid = User?.Claims?.FirstOrDefault(c => c.Type == MareSynchronosShared.Utils.MareClaimTypes.Uid)?.Value ?? string.Empty;
-                var fromAlias = string.IsNullOrEmpty(req.DisplayName)
-                    ? (User?.Claims?.FirstOrDefault(c => c.Type == MareSynchronosShared.Utils.MareClaimTypes.Alias)?.Value ?? string.Empty)
-                    : req.DisplayName;
+        if (req == null || string.IsNullOrEmpty(req.Token)) return BadRequest(new { code = "TOKEN_REQUIRED" });
 
-                using var http = new HttpClient();
-                try { http.DefaultRequestHeaders.UserAgent.ParseAdd("UmbraAuthService/1.0"); } catch { /* ignore */ }
-                // Prefer configured Main base URL if present; fallback to incoming host (nginx)
-                var configuredBase = _configuration.GetValue<string>("NearbyDiscovery:MainBaseUrl");
-                var baseUrl = string.IsNullOrWhiteSpace(configuredBase) ? $"{Request.Scheme}://{Request.Host.Value}" : configuredBase;
-                var url = new Uri(new Uri(baseUrl), "/main/discovery/notifyRequest");
+        var fromUid = CallerUid;
+        if (string.IsNullOrEmpty(fromUid)) return Unauthorized();
 
-                // Generate internal JWT
-                var serverToken = HttpContext.RequestServices.GetRequiredService<MareSynchronosShared.Utils.ServerTokenGenerator>().Token;
-                http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serverToken);
-                var payload = System.Text.Json.JsonSerializer.Serialize(new { targetUid, fromUid, fromAlias });
-                var resp = await http.PostAsync(url, new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
-                if (!resp.IsSuccessStatusCode)
-                {
-                    var txt = await resp.Content.ReadAsStringAsync();
-                    HttpContext.RequestServices.GetRequiredService<ILogger<DiscoveryController>>()
-                        .LogWarning("notifyRequest failed: {code} {reason} {body}", (int)resp.StatusCode, resp.ReasonPhrase, txt);
-                }
-            }
-            catch { /* ignore */ }
+        if (!await RedisRateLimiter.TryAcquireAsync(_redis.GetDatabase(), "ndrequest", fromUid, RequestMaxPerMinute, TimeSpan.FromMinutes(1), RequestBurst).ConfigureAwait(false))
+            return TooManyRequests();
 
-            return Accepted();
-        }
-        return BadRequest(new { code = "INVALID_TOKEN" });
+        if (!_presence.ConsumeToken(req.Token, fromUid, out var targetUid))
+            return BadRequest(new { code = "INVALID_TOKEN" });
+
+        var fromAlias = ResolveDisplayName(fromUid);
+        return await RelayAsync("/main/discovery/notifyRequest", new { targetUid, fromUid, fromAlias }, ct).ConfigureAwait(false);
     }
 
     public sealed class AcceptNotifyDto
     {
         [JsonPropertyName("targetUid")] public string TargetUid { get; set; } = string.Empty;
-        [JsonPropertyName("displayName")] public string? DisplayName { get; set; }
     }
 
-    // Accept notification relay (sender -> auth -> main)
+    // Relais d'acceptation des anciens clients : validé côté hub (il faut une vraie demande de la cible).
     [HttpPost("acceptNotify")]
-    public async Task<IActionResult> AcceptNotify([FromBody] AcceptNotifyDto req)
+    public async Task<IActionResult> AcceptNotify([FromBody] AcceptNotifyDto req, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(req.TargetUid)) return BadRequest();
+        if (req == null || string.IsNullOrEmpty(req.TargetUid)) return BadRequest();
+
+        var fromUid = CallerUid;
+        if (string.IsNullOrEmpty(fromUid)) return Unauthorized();
+
+        if (!await RedisRateLimiter.TryAcquireAsync(_redis.GetDatabase(), "ndaccept", fromUid, AcceptMaxPerMinute, TimeSpan.FromMinutes(1)).ConfigureAwait(false))
+            return TooManyRequests();
+
+        return await RelayAsync("/main/discovery/notifyAccept", new { targetUid = req.TargetUid, fromUid }, ct).ConfigureAwait(false);
+    }
+
+    // Nom publié avec la présence, sinon alias, sinon UID
+    private string ResolveDisplayName(string uid)
+    {
+        var published = _presence.GetPublishedDisplayName(uid);
+        if (!string.IsNullOrWhiteSpace(published)) return published;
+
+        var alias = User?.Claims?.FirstOrDefault(c => c.Type == MareClaimTypes.Alias)?.Value;
+        return string.IsNullOrWhiteSpace(alias) ? uid : alias;
+    }
+
+    private async Task<IActionResult> RelayAsync(string path, object payload, CancellationToken ct)
+    {
         try
         {
-            var fromUid = User?.Claims?.FirstOrDefault(c => c.Type == MareSynchronosShared.Utils.MareClaimTypes.Uid)?.Value ?? string.Empty;
-            var fromAlias = string.IsNullOrEmpty(req.DisplayName)
-                ? (User?.Claims?.FirstOrDefault(c => c.Type == MareSynchronosShared.Utils.MareClaimTypes.Alias)?.Value ?? string.Empty)
-                : req.DisplayName;
-
-            using var http = new HttpClient();
-            try { http.DefaultRequestHeaders.UserAgent.ParseAdd("UmbraAuthService/1.0"); } catch { /* ignore */ }
+            using var http = _httpClientFactory.CreateClient(RelayHttpClientName);
+            // Préférer l'URL du main configurée ; sinon l'hôte entrant (nginx)
             var configuredBase = _configuration.GetValue<string>("NearbyDiscovery:MainBaseUrl");
             var baseUrl = string.IsNullOrWhiteSpace(configuredBase) ? $"{Request.Scheme}://{Request.Host.Value}" : configuredBase;
-            var url = new Uri(new Uri(baseUrl), "/main/discovery/notifyAccept");
-            var serverToken = HttpContext.RequestServices.GetRequiredService<MareSynchronosShared.Utils.ServerTokenGenerator>().Token;
-            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serverToken);
-            var payload = System.Text.Json.JsonSerializer.Serialize(new { targetUid = req.TargetUid, fromUid, fromAlias });
-            var resp = await http.PostAsync(url, new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
-            if (!resp.IsSuccessStatusCode)
+            using var message = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(baseUrl), path))
             {
-                var txt = await resp.Content.ReadAsStringAsync();
-                HttpContext.RequestServices.GetRequiredService<ILogger<DiscoveryController>>()
-                    .LogWarning("notifyAccept failed: {code} {reason} {body}", (int)resp.StatusCode, resp.ReasonPhrase, txt);
-            }
-        }
-        catch { /* ignore */ }
+                Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json"),
+            };
+            message.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _serverTokenGenerator.Token);
 
-        return Accepted();
+            using var resp = await http.SendAsync(message, ct).ConfigureAwait(false);
+            if (resp.IsSuccessStatusCode) return Accepted();
+
+            if (resp.StatusCode == System.Net.HttpStatusCode.Forbidden) return Forbid();
+
+            _logger.LogWarning("Discovery relay {path} failed: {code} {reason}", path, (int)resp.StatusCode, resp.ReasonPhrase);
+            return StatusCode(StatusCodes.Status502BadGateway, new { code = "RELAY_FAILED" });
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Discovery relay {path} failed", path);
+            return StatusCode(StatusCodes.Status502BadGateway, new { code = "RELAY_FAILED" });
+        }
     }
 
     public sealed class PublishRequest
@@ -158,7 +190,7 @@ public class DiscoveryController : Controller
     [HttpPost("disable")]
     public IActionResult Disable()
     {
-        var uid = User?.Claims?.FirstOrDefault(c => c.Type == MareSynchronosShared.Utils.MareClaimTypes.Uid)?.Value ?? string.Empty;
+        var uid = CallerUid;
         if (string.IsNullOrEmpty(uid)) return Accepted();
         _presence.Unpublish(uid);
         return Accepted();
@@ -171,7 +203,7 @@ public class DiscoveryController : Controller
         {
             return BadRequest(new { code = "DISCOVERY_SALT_EXPIRED" });
         }
-        var uid = User?.Claims?.FirstOrDefault(c => c.Type == MareSynchronosShared.Utils.MareClaimTypes.Uid)?.Value ?? string.Empty;
+        var uid = CallerUid;
         if (string.IsNullOrEmpty(uid) || req?.Hashes == null || req.Hashes.Length == 0)
             return Accepted();
 

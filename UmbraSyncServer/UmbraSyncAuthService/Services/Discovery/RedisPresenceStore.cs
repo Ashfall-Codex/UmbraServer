@@ -100,9 +100,7 @@ public sealed class RedisPresenceStore : IDiscoveryPresenceStore
             if (p == null || string.IsNullOrEmpty(p.Uid)) return (false, null, string.Empty, null);
             if (string.Equals(p.Uid, requesterUid, StringComparison.Ordinal)) return (false, null, string.Empty, null);
 
-            // Refresh TTLs for this presence whenever it is matched
-            _db.KeyExpire(KeyForHash(hash), _presenceTtl);
-            _db.KeyExpire(KeyForUidSet(p.Uid), _presenceTtl);
+            // Pas de rafraîchissement ici : seule la publication du joueur lui-même prolonge sa présence
 
             // Visible but requests disabled → return without token
             if (!p.AllowRequests)
@@ -111,7 +109,7 @@ public sealed class RedisPresenceStore : IDiscoveryPresenceStore
             }
 
             var token = Guid.NewGuid().ToString("N");
-            _db.StringSet(KeyForToken(token), p.Uid, _tokenTtl);
+            _db.StringSet(KeyForToken(token), JsonSerializer.Serialize(new TokenInfo(p.Uid, requesterUid), _jsonOpts), _tokenTtl);
             return (true, token, p.Uid, p.DisplayName);
         }
         catch
@@ -120,37 +118,52 @@ public sealed class RedisPresenceStore : IDiscoveryPresenceStore
         }
     }
 
-    public bool ValidateToken(string token, out string targetUid)
+    public bool ConsumeToken(string token, string requesterUid, out string targetUid)
     {
         targetUid = string.Empty;
         var key = KeyForToken(token);
         var val = _db.StringGet(key);
         if (!val.HasValue) return false;
-        targetUid = val!;
+        // Seul l'appel qui supprime la clé utilise le jeton : deux requêtes simultanées ne peuvent pas le rejouer
+        if (!_db.KeyDelete(key)) return false;
+
         try
         {
-            var setKey = KeyForUidSet(targetUid);
-            var members = _db.SetMembers(setKey);
-            if (members is { Length: > 0 })
+            var info = JsonSerializer.Deserialize<TokenInfo>(val.ToString());
+            if (info == null || string.IsNullOrEmpty(info.TargetUid)) return false;
+            if (!string.Equals(info.RequesterUid, requesterUid, StringComparison.Ordinal)) return false;
+            targetUid = info.TargetUid;
+            return true;
+        }
+        catch (JsonException)
+        {
+            // Jeton émis avant la mise à jour (valeur = UID brut, sans demandeur) : refusé, le client en redemandera un
+            return false;
+        }
+    }
+
+    public string? GetPublishedDisplayName(string uid)
+    {
+        try
+        {
+            foreach (var member in _db.SetMembers(KeyForUidSet(uid)))
             {
-                var batch = _db.CreateBatch();
-                foreach (var m in members)
-                {
-                    var h = (string)m;
-                    batch.KeyExpireAsync(KeyForHash(h), _presenceTtl);
-                }
-                batch.KeyExpireAsync(setKey, _presenceTtl);
-                batch.Execute();
-            }
-            else
-            {
-                // Still try to extend the set TTL even if empty
-                _db.KeyExpire(setKey, _presenceTtl);
+                var val = _db.StringGet(KeyForHash((string)member!));
+                if (!val.HasValue) continue;
+                var p = JsonSerializer.Deserialize<Presence>(val.ToString());
+                if (p != null && string.Equals(p.Uid, uid, StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(p.DisplayName))
+                    return p.DisplayName;
             }
         }
-        catch { /* ignore TTL refresh issues */ }
-        return true;
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "RedisPresenceStore: display name lookup failed for uid {uid}", uid);
+        }
+
+        return null;
     }
+
+    private sealed record TokenInfo(string TargetUid, string RequesterUid);
 
     private sealed record Presence(string Uid, string? DisplayName, bool AllowRequests);
 }

@@ -35,6 +35,7 @@ public class MareDbContext : DbContext
     public DbSet<BannedRegistrations> BannedRegistrations { get; set; }
     public DbSet<Banned> BannedUsers { get; set; }
     public DbSet<ClientPair> ClientPairs { get; set; }
+    public DbSet<UserBlock> UserBlocks { get; set; }
     public DbSet<FileCache> Files { get; set; }
     public DbSet<FileBc7Conversion> FileBc7Conversions { get; set; }
     public DbSet<ForbiddenUploadEntry> ForbiddenUploadEntries { get; set; }
@@ -122,6 +123,7 @@ public class MareDbContext : DbContext
         mb.Entity<User>().ToTable("users");
         mb.Entity<FileCache>().ToTable("file_caches");
         mb.Entity<FileCache>().HasIndex(c => c.UploaderUID);
+        mb.Entity<FileCache>().HasOne(c => c.Uploader).WithMany().HasForeignKey(c => c.UploaderUID).OnDelete(DeleteBehavior.SetNull);
         mb.Entity<FileCache>().HasIndex(c => c.S3Confirmed);
         mb.Entity<FileCache>().Property(c => c.S3Confirmed).HasDefaultValue(false);
         mb.Entity<FileCache>().Property(c => c.S3ConfirmedAt).HasColumnType("timestamp with time zone");
@@ -134,6 +136,11 @@ public class MareDbContext : DbContext
         mb.Entity<ClientPair>().HasKey(u => new { u.UserUID, u.OtherUserUID });
         mb.Entity<ClientPair>().HasIndex(c => c.UserUID);
         mb.Entity<ClientPair>().HasIndex(c => c.OtherUserUID);
+        mb.Entity<UserBlock>().ToTable("user_blocks");
+        mb.Entity<UserBlock>().HasKey(u => new { u.UserUID, u.BlockedUserUID });
+        mb.Entity<UserBlock>().HasIndex(c => c.BlockedUserUID);
+        mb.Entity<UserBlock>().HasOne(b => b.User).WithMany().HasForeignKey(b => b.UserUID).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<UserBlock>().HasOne(b => b.BlockedUser).WithMany().HasForeignKey(b => b.BlockedUserUID).OnDelete(DeleteBehavior.Cascade);
         mb.Entity<ForbiddenUploadEntry>().ToTable("forbidden_upload_entries");
         mb.Entity<Banned>().ToTable("banned_users");
         mb.Entity<LodeStoneAuth>().ToTable("lodestone_auth");

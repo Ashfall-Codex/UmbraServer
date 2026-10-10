@@ -74,6 +74,8 @@ public partial class MareHub
 
         _mareMetrics.IncCounter(MetricsAPI.CounterUsersRegisteredDeleted, 1);
 
+        _pairCacheService.InvalidateUsers(pairedWithUser.Append(uid));
+
         foreach (var pairUid in pairedWithUser)
         {
             await Clients.User(pairUid).Client_UserRemoveClientPair(new(userData)).ConfigureAwait(false);
@@ -102,7 +104,7 @@ public partial class MareHub
 
         await SafeLifecycleStep("RemoveDiscoveryPresence", () => RemoveDiscoveryPresence(uid)).ConfigureAwait(false);
         await SafeLifecycleStep("RemoveUserFromRedis", () => RemoveUserFromRedis(uid)).ConfigureAwait(false);
-        await SafeLifecycleStep("DisposePlayer", () => _pairCacheService.DisposePlayer(uid)).ConfigureAwait(false);
+        await SafeLifecycleStep("RemovePlayer", () => _pairCacheService.RemovePlayer(uid)).ConfigureAwait(false);
     }
 
     // Présence de découverte publiée par le service d'authentification (clés nd:uid / nd:hash).
@@ -367,6 +369,8 @@ public partial class MareHub
 
         DbContext.GroupPairs.Remove(groupPair);
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
+
+        _pairCacheService.InvalidateUsers(groupPairs.Select(p => p.GroupUserUID).Append(userUid));
 
         await Clients.User(userUid).Client_GroupDelete(new GroupDto(group.ToGroupData())).ConfigureAwait(false);
 

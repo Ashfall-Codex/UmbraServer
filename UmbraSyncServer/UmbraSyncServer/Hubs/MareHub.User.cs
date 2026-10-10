@@ -28,8 +28,16 @@ public partial class MareHub
     {
         _logger.LogCallInfo(MareHubLogger.Args(dto));
 
+        if (dto?.User == null || string.IsNullOrWhiteSpace(dto.User.UID)) return;
         var uid = dto.User.UID.Trim();
-        if (string.Equals(dto.User.UID, UserUID, StringComparison.Ordinal) || string.IsNullOrWhiteSpace(dto.User.UID)) return;
+        if (string.Equals(uid, UserUID, StringComparison.Ordinal)) return;
+
+        if (!await RedisRateLimiter.TryAcquireAsync(_redis.Database, "pairadd", UserUID, PairAddMaxPerMinute, TimeSpan.FromMinutes(1)).ConfigureAwait(false))
+        {
+            _logger.LogCallWarning(MareHubLogger.Args(dto, "RateLimited"));
+            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "Trop de demandes d'appairage en peu de temps, réessaie dans une minute.").ConfigureAwait(false);
+            return;
+        }
 
         var otherUser = await DbContext.Users.SingleOrDefaultAsync(u => u.UID == uid || u.Alias == uid).ConfigureAwait(false);
         if (otherUser == null)
@@ -69,50 +77,17 @@ public partial class MareHub
 
         _logger.LogCallInfo(MareHubLogger.Args(dto, "Success"));
 
-        ClientPair wl = new ClientPair()
-        {
-            OtherUser = otherUser,
-            User = user,
-        };
-        await DbContext.ClientPairs.AddAsync(wl).ConfigureAwait(false);
+        var blocked = await UserBlockQueries.IsBlockedEitherWayAsync(DbContext, UserUID, otherUser.UID).ConfigureAwait(false);
+        var permissions = await AddPairEntryAsync(user, otherUser).ConfigureAwait(false);
 
-        // Initialise le UserPermissionSet du caller en utilisant ses préférences par défaut, sauf si une entrée existe déjà
-        // avec sticky=true (cas d'une pair re-créée après suppression : on respecte les anciennes préfs).
-        var existingPerms = await DbContext.Permissions
-            .SingleOrDefaultAsync(p => p.UserUID == UserUID && p.OtherUserUID == otherUser.UID).ConfigureAwait(false);
-        UserPermissionSet permissions;
-        if (existingPerms == null || !existingPerms.Sticky)
+        // L'autre joueur nous avait envoyé une demande : notre ajout vaut acceptation, on crée aussi
+        // son côté de la paire au lieu de lui renvoyer une demande à accepter.
+        UserPermissionSet requesterPermissions = null;
+        if (!blocked
+            && OppositeEntry(otherUser.UID) == null
+            && await PairRequestRedis.ConsumeAsync(_redis.Database, otherUser.UID, UserUID).ConfigureAwait(false))
         {
-            var ownDefaultPerms = await DbContext.UserDefaultPreferredPermissions.AsNoTracking()
-                .SingleOrDefaultAsync(p => p.UserUID == UserUID).ConfigureAwait(false);
-            if (existingPerms == null)
-            {
-                permissions = new UserPermissionSet
-                {
-                    User = user,
-                    OtherUser = otherUser,
-                    DisableAnimations = ownDefaultPerms?.DisableIndividualAnimations ?? false,
-                    DisableSounds = ownDefaultPerms?.DisableIndividualSounds ?? false,
-                    DisableVFX = ownDefaultPerms?.DisableIndividualVFX ?? false,
-                    IsPaused = false,
-                    Sticky = true,
-                };
-                await DbContext.Permissions.AddAsync(permissions).ConfigureAwait(false);
-            }
-            else
-            {
-                existingPerms.DisableAnimations = ownDefaultPerms?.DisableIndividualAnimations ?? false;
-                existingPerms.DisableSounds = ownDefaultPerms?.DisableIndividualSounds ?? false;
-                existingPerms.DisableVFX = ownDefaultPerms?.DisableIndividualVFX ?? false;
-                existingPerms.IsPaused = false;
-                existingPerms.Sticky = true;
-                DbContext.Permissions.Update(existingPerms);
-                permissions = existingPerms;
-            }
-        }
-        else
-        {
-            permissions = existingPerms;
+            requesterPermissions = await AddPairEntryAsync(otherUser, user).ConfigureAwait(false);
         }
 
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
@@ -130,25 +105,154 @@ public partial class MareHub
         var userPairResponse = new UserPairDto(otherUser.ToUserData(), status, ownPerm, otherPerm);
         await Clients.User(user.UID).Client_UserAddClientPair(userPairResponse).ConfigureAwait(false);
 
-        if (otherEntry == null && otherIdent != null)
+        if (requesterPermissions != null)
         {
-            await Clients.User(otherUser.UID).Client_ReceivePairRequest(new UserDto(user.ToUserData())).ConfigureAwait(false);
+            _logger.LogCallInfo(MareHubLogger.Args(dto, "PairRequestCompleted"));
+            await Clients.User(otherUser.UID).Client_UserAddClientPair(new UserPairDto(user.ToUserData(), IndividualPairStatus.Bidirectional,
+                requesterPermissions.ToUserPermissions(setSticky: true), permissions.ToUserPermissions())).ConfigureAwait(false);
+            await Clients.User(otherUser.UID).Client_PairRequestAccepted(new UserDto(user.ToUserData())).ConfigureAwait(false);
+        }
+        else if (otherEntry != null)
+        {
+            // Paire par UID : l'autre nous avait ajouté et attendait notre réponse
+            if (await PairRequestRedis.ConsumeAsync(_redis.Database, otherUser.UID, UserUID).ConfigureAwait(false))
+                await Clients.User(otherUser.UID).Client_PairRequestAccepted(new UserDto(user.ToUserData())).ConfigureAwait(false);
+        }
+        else if (!blocked)
+        {
+            await PairRequestRedis.RegisterAsync(_redis.Database, UserUID, otherUser.UID).ConfigureAwait(false);
+            if (otherIdent != null)
+                await Clients.User(otherUser.UID).Client_ReceivePairRequest(new UserDto(user.ToUserData())).ConfigureAwait(false);
         }
 
         if (otherIdent == null || otherEntry == null) return;
 
-        // Pair devient bidirectionnel : on prévient les deux côtés du nouveau statut.
-        await Clients.User(otherUser.UID)
-            .Client_UpdateUserIndividualPairStatusDto(new UserIndividualPairStatusDto(user.ToUserData(), IndividualPairStatus.Bidirectional)).ConfigureAwait(false);
+        if (requesterPermissions == null)
+        {
+            // Pair devient bidirectionnel : on prévient les deux côtés du nouveau statut.
+            await Clients.User(otherUser.UID)
+                .Client_UpdateUserIndividualPairStatusDto(new UserIndividualPairStatusDto(user.ToUserData(), IndividualPairStatus.Bidirectional)).ConfigureAwait(false);
 
-        await Clients.User(otherUser.UID)
-            .Client_UserUpdateOtherPairPermissions(new UserPermissionsDto(user.ToUserData(), permissions.ToUserPermissions())).ConfigureAwait(false);
+            await Clients.User(otherUser.UID)
+                .Client_UserUpdateOtherPairPermissions(new UserPermissionsDto(user.ToUserData(), permissions.ToUserPermissions())).ConfigureAwait(false);
+        }
 
         if (!ownPerm.IsPaused() && !otherPerm.IsPaused())
         {
             await Clients.User(UserUID).Client_UserSendOnline(new(otherUser.ToUserData(), otherIdent)).ConfigureAwait(false);
             await Clients.User(otherUser.UID).Client_UserSendOnline(new(user.ToUserData(), UserCharaIdent)).ConfigureAwait(false);
         }
+    }
+
+    private const int PairAddMaxPerMinute = 20;
+    private const int BlockMaxPerMinute = 30;
+
+    /// <summary>
+    /// Ajoute l'entrée <paramref name="owner"/> → <paramref name="other"/> et initialise ses permissions avec les préférences
+    /// par défaut de <paramref name="owner"/>, sauf si une entrée existe déjà avec sticky=true (paire re-créée après
+    /// suppression : on respecte les anciennes préférences). N'enregistre pas : l'appelant fait SaveChanges.
+    /// </summary>
+    private async Task<UserPermissionSet> AddPairEntryAsync(User owner, User other)
+    {
+        await DbContext.ClientPairs.AddAsync(new ClientPair { OtherUser = other, User = owner }).ConfigureAwait(false);
+
+        var existingPerms = await DbContext.Permissions
+            .SingleOrDefaultAsync(p => p.UserUID == owner.UID && p.OtherUserUID == other.UID).ConfigureAwait(false);
+        if (existingPerms != null && existingPerms.Sticky) return existingPerms;
+
+        var ownDefaultPerms = await DbContext.UserDefaultPreferredPermissions.AsNoTracking()
+            .SingleOrDefaultAsync(p => p.UserUID == owner.UID).ConfigureAwait(false);
+        if (existingPerms == null)
+        {
+            var permissions = new UserPermissionSet
+            {
+                User = owner,
+                OtherUser = other,
+                DisableAnimations = ownDefaultPerms?.DisableIndividualAnimations ?? false,
+                DisableSounds = ownDefaultPerms?.DisableIndividualSounds ?? false,
+                DisableVFX = ownDefaultPerms?.DisableIndividualVFX ?? false,
+                IsPaused = false,
+                Sticky = true,
+            };
+            await DbContext.Permissions.AddAsync(permissions).ConfigureAwait(false);
+            return permissions;
+        }
+
+        existingPerms.DisableAnimations = ownDefaultPerms?.DisableIndividualAnimations ?? false;
+        existingPerms.DisableSounds = ownDefaultPerms?.DisableIndividualSounds ?? false;
+        existingPerms.DisableVFX = ownDefaultPerms?.DisableIndividualVFX ?? false;
+        existingPerms.IsPaused = false;
+        existingPerms.Sticky = true;
+        DbContext.Permissions.Update(existingPerms);
+        return existingPerms;
+    }
+
+    [Authorize(Policy = "Identified")]
+    public async Task UserBlock(UserDto dto)
+    {
+        _logger.LogCallInfo(MareHubLogger.Args(dto));
+        if (dto?.User == null || string.IsNullOrWhiteSpace(dto.User.UID)) return;
+        var target = dto.User.UID.Trim();
+        if (string.Equals(target, UserUID, StringComparison.Ordinal)) return;
+
+        if (!await RedisRateLimiter.TryAcquireAsync(_redis.Database, "userblock", UserUID, BlockMaxPerMinute, TimeSpan.FromMinutes(1)).ConfigureAwait(false))
+        {
+            _logger.LogCallWarning(MareHubLogger.Args(dto, "RateLimited"));
+            return;
+        }
+
+        var targetUser = await DbContext.Users.AsNoTracking().SingleOrDefaultAsync(u => u.UID == target).ConfigureAwait(false);
+        if (targetUser == null) return;
+
+        // Une demande en attente dans un sens ou dans l'autre n'a plus de raison d'aboutir
+        await PairRequestRedis.ClearBetweenAsync(_redis.Database, UserUID, targetUser.UID).ConfigureAwait(false);
+
+        var exists = await DbContext.UserBlocks.AnyAsync(b => b.UserUID == UserUID && b.BlockedUserUID == targetUser.UID).ConfigureAwait(false);
+        if (exists) return;
+
+        await DbContext.UserBlocks.AddAsync(new UserBlock
+        {
+            UserUID = UserUID,
+            BlockedUserUID = targetUser.UID,
+            CreatedAt = DateTime.UtcNow,
+        }).ConfigureAwait(false);
+
+        try
+        {
+            await DbContext.SaveChangesAsync().ConfigureAwait(false);
+        }
+        catch (DbUpdateException)
+        {
+            // Double appel concurrent : le blocage existe déjà, c'est le résultat attendu
+            _logger.LogCallInfo(MareHubLogger.Args(dto, "AlreadyBlocked"));
+        }
+    }
+
+    [Authorize(Policy = "Identified")]
+    public async Task UserUnblock(UserDto dto)
+    {
+        _logger.LogCallInfo(MareHubLogger.Args(dto));
+        if (dto?.User == null || string.IsNullOrWhiteSpace(dto.User.UID)) return;
+        var target = dto.User.UID.Trim();
+
+        var entry = await DbContext.UserBlocks.SingleOrDefaultAsync(b => b.UserUID == UserUID && b.BlockedUserUID == target).ConfigureAwait(false);
+        if (entry == null) return;
+
+        DbContext.UserBlocks.Remove(entry);
+        await DbContext.SaveChangesAsync().ConfigureAwait(false);
+    }
+
+    [Authorize(Policy = "Identified")]
+    public async Task<List<UserData>> UserGetBlockedUsers()
+    {
+        _logger.LogCallInfo();
+
+        var blocked = await DbContext.UserBlocks.AsNoTracking()
+            .Where(b => b.UserUID == UserUID)
+            .Select(b => b.BlockedUser)
+            .ToListAsync().ConfigureAwait(false);
+
+        return blocked.Select(u => u.ToUserData()).ToList();
     }
 
     [Authorize(Policy = "Identified")]
@@ -403,6 +507,14 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task UserPushData(UserCharaDataMessageDto dto)
     {
+        if (dto?.CharaData == null || dto.Recipients == null)
+        {
+            _logger.LogCallWarning(MareHubLogger.Args("malformed_push", dto?.CharaData == null ? "no_chara_data" : "no_recipients"));
+            return;
+        }
+
+        dto.CharaData.FileReplacements ??= new();
+
         var fileReplacementsTotal = dto.CharaData.FileReplacements?.Values.Sum(v => v?.Count ?? 0) ?? 0;
         var glamourerLen = dto.CharaData.GlamourerData?.Values.Sum(v => v?.Length ?? 0) ?? 0;
         var customizeLen = dto.CharaData.CustomizePlusData?.Values.Sum(v => v?.Length ?? 0) ?? 0;
@@ -438,35 +550,54 @@ public partial class MareHub
             // swallow
         }
 
-        bool hadInvalidData = false;
-        List<string> invalidGamePaths = new();
-        List<string> invalidFileSwapPaths = new();
-        foreach (var replacement in dto.CharaData.FileReplacements.SelectMany(p => p.Value))
+        // Une entrée invalide est retirée du push au lieu de faire rejeter tout l'envoi :
+        // sinon un seul chemin de mod exotique bloque toutes les mises à jour de l'émetteur.
+        int removedEntries = 0;
+        foreach (var kind in dto.CharaData.FileReplacements.Keys.ToList())
         {
-            var invalidPaths = replacement.GamePaths.Where(p => !GamePathRegex().IsMatch(p)).ToList();
-            invalidPaths.AddRange(replacement.GamePaths.Where(p => !AllowedExtensionsForGamePaths.Any(e => p.EndsWith(e, StringComparison.OrdinalIgnoreCase))));
-            replacement.GamePaths = replacement.GamePaths.Where(p => !invalidPaths.Contains(p, StringComparer.OrdinalIgnoreCase)).ToArray();
-            bool validGamePaths = replacement.GamePaths.Any();
-            bool validHash = string.IsNullOrEmpty(replacement.Hash) || HashRegex().IsMatch(replacement.Hash);
-            bool validFileSwapPath = string.IsNullOrEmpty(replacement.FileSwapPath) || GamePathRegex().IsMatch(replacement.FileSwapPath);
-            if (!validGamePaths || !validHash || !validFileSwapPath)
+            var replacements = dto.CharaData.FileReplacements[kind];
+            if (replacements == null)
             {
-                _logger.LogCallWarning(MareHubLogger.Args("Invalid Data", "GamePaths", validGamePaths, string.Join(",", invalidPaths), "Hash", validHash, replacement.Hash, "FileSwap", validFileSwapPath, replacement.FileSwapPath));
-                hadInvalidData = true;
-                if (!validFileSwapPath) invalidFileSwapPaths.Add(replacement.FileSwapPath);
-                if (!validGamePaths) invalidGamePaths.AddRange(replacement.GamePaths);
-                if (!validHash) invalidFileSwapPaths.Add(replacement.Hash);
+                dto.CharaData.FileReplacements[kind] = [];
+                continue;
             }
+
+            List<FileReplacementData> kept = new(replacements.Count);
+            foreach (var replacement in replacements)
+            {
+                if (replacement == null) continue;
+
+                var gamePaths = replacement.GamePaths ?? [];
+                var invalidPaths = gamePaths.Where(p => p == null || !GamePathRegex().IsMatch(p)
+                    || !AllowedExtensionsForGamePaths.Any(e => p.EndsWith(e, StringComparison.OrdinalIgnoreCase))).ToList();
+                replacement.GamePaths = gamePaths.Where(p => !invalidPaths.Contains(p, StringComparer.Ordinal)).ToArray();
+                bool validGamePaths = replacement.GamePaths.Length > 0;
+                bool validHash = string.IsNullOrEmpty(replacement.Hash) || HashRegex().IsMatch(replacement.Hash);
+                bool validFileSwapPath = string.IsNullOrEmpty(replacement.FileSwapPath) || GamePathRegex().IsMatch(replacement.FileSwapPath);
+
+                if (invalidPaths.Count > 0 || !validHash || !validFileSwapPath)
+                {
+                    _logger.LogCallWarning(MareHubLogger.Args("Invalid Data", "GamePaths", validGamePaths, string.Join(",", invalidPaths), "Hash", validHash, replacement.Hash, "FileSwap", validFileSwapPath, replacement.FileSwapPath));
+                }
+
+                if (!validGamePaths || !validHash || !validFileSwapPath)
+                {
+                    removedEntries++;
+                    continue;
+                }
+
+                kept.Add(replacement);
+            }
+
+            dto.CharaData.FileReplacements[kind] = kept;
         }
 
-        if (hadInvalidData)
+        // Un même jeu de données est repoussé à chaque nouveau pair visible : un seul avertissement par version
+        if (removedEntries > 0
+            && _pushIntegrityChecked.TryAdd(UserUID + ":invalid:" + dto.CharaData.DataHash.Value, DateTime.UtcNow))
         {
-            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Error, "One or more of your supplied mods were rejected from the server. Consult /xllog for more information.").ConfigureAwait(false);
-            throw new HubException("Invalid data provided, contact the appropriate mod creator to resolve those issues"
-            + Environment.NewLine
-            + string.Join(Environment.NewLine, invalidGamePaths.Select(p => "Invalid Game Path: " + p))
-            + Environment.NewLine
-            + string.Join(Environment.NewLine, invalidFileSwapPaths.Select(p => "Invalid FileSwap Path: " + p)));
+            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning,
+                $"{removedEntries} entrée(s) de mod invalide(s) ont été retirées de votre envoi (chemin ou hash non conforme). Le reste de votre apparence a bien été transmis. Consultez /xllog pour le détail.").ConfigureAwait(false);
         }
 
         try
@@ -490,7 +621,11 @@ public partial class MareHub
 
         await WarnOnMissingUploadsAsync(dto).ConfigureAwait(false);
 
-        var recipientUids = dto.Recipients.Select(r => r.UID).ToList();
+        var recipientUids = dto.Recipients
+            .Where(r => r != null && !string.IsNullOrEmpty(r.UID))
+            .Select(r => r.UID)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
 
         bool allCached = await _pairCacheService
             .AreAllPlayersCached(UserUID, recipientUids, Context.ConnectionAborted)
@@ -626,6 +761,8 @@ public partial class MareHub
         DbContext.ClientPairs.Remove(callerPair);
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
 
+        _pairCacheService.InvalidateUsers([UserUID, dto.User.UID]);
+
         _logger.LogCallInfo(MareHubLogger.Args(dto, "Success"));
 
         await Clients.User(UserUID).Client_UserRemoveClientPair(dto).ConfigureAwait(false);
@@ -738,6 +875,9 @@ public partial class MareHub
         permsRow.Sticky = dto.Permissions.IsSticky() || permsRow.Sticky;
         DbContext.Update(permsRow);
         await DbContext.SaveChangesAsync().ConfigureAwait(false);
+
+        if (pauseChange)
+            _pairCacheService.InvalidateUsers([UserUID, dto.User.UID]);
 
         _logger.LogCallInfo(MareHubLogger.Args(dto, "Success"));
 

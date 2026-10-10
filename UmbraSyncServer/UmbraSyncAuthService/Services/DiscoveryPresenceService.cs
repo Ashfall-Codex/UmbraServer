@@ -45,9 +45,14 @@ public class DiscoveryPresenceService : IHostedService, IDisposable
         return (res.Found, res.Token, res.TargetUid, res.DisplayName);
     }
 
-    public bool ValidateToken(string token, out string targetUid)
+    public bool ConsumeToken(string token, string requesterUid, out string targetUid)
     {
-        return _store.ValidateToken(token, out targetUid);
+        return _store.ConsumeToken(token, requesterUid, out targetUid);
+    }
+
+    public string? GetPublishedDisplayName(string uid)
+    {
+        return _store.GetPublishedDisplayName(uid);
     }
 
     public void Dispose()
