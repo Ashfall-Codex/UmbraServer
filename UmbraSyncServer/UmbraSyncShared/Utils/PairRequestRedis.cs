@@ -37,6 +37,17 @@ public static class PairRequestRedis
             || await db.KeyExistsAsync(DoneKey(fromUid, toUid)).ConfigureAwait(false);
     }
 
+    // Refus des demandes par UID, reposé par le client à chaque connexion : l'échéance purge les comptes abandonnés
+    public static readonly TimeSpan OptOutTtl = TimeSpan.FromDays(30);
+
+    private static string OptOutKey(string uid) => $"pairreq:optout:{uid}";
+
+    public static Task SetRequestsAllowedAsync(IDatabase db, string uid, bool allowed)
+        => allowed ? db.KeyDeleteAsync(OptOutKey(uid)) : db.StringSetAsync(OptOutKey(uid), "1", OptOutTtl);
+
+    public static Task<bool> RefusesRequestsAsync(IDatabase db, string uid)
+        => db.KeyExistsAsync(OptOutKey(uid));
+
     public static Task ClearBetweenAsync(IDatabase db, string uidA, string uidB)
         => db.KeyDeleteAsync(
         [

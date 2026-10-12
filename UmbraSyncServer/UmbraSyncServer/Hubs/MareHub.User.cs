@@ -73,6 +73,15 @@ public partial class MareHub
             return;
         }
 
+        // Le destinataire refuse les demandes par UID : seule une acceptation passe (il nous a déjà ajouté ou nous a demandé)
+        if (OppositeEntry(otherUser.UID) == null
+            && !await PairRequestRedis.IsPendingAsync(_redis.Database, otherUser.UID, UserUID).ConfigureAwait(false)
+            && await PairRequestRedis.RefusesRequestsAsync(_redis.Database, otherUser.UID).ConfigureAwait(false))
+        {
+            _logger.LogCallInfo(MareHubLogger.Args(dto, "RequestsDisabled"));
+            throw new HubException(UmbraSync.API.SignalR.IMareHub.ErrorPairRequestsDisabled);
+        }
+
         var user = await DbContext.Users.SingleAsync(u => u.UID == UserUID).ConfigureAwait(false);
 
         _logger.LogCallInfo(MareHubLogger.Args(dto, "Success"));
@@ -185,6 +194,13 @@ public partial class MareHub
         existingPerms.Sticky = true;
         DbContext.Permissions.Update(existingPerms);
         return existingPerms;
+    }
+
+    [Authorize(Policy = "Identified")]
+    public async Task UserSetPairRequestsAllowed(bool allowed)
+    {
+        _logger.LogCallInfo(MareHubLogger.Args(allowed));
+        await PairRequestRedis.SetRequestsAllowedAsync(_redis.Database, UserUID, allowed).ConfigureAwait(false);
     }
 
     [Authorize(Policy = "Identified")]
