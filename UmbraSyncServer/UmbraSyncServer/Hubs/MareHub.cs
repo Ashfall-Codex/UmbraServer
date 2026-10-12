@@ -264,7 +264,12 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
         {
             await _redis.SetRemoveAsync($"connections:{UserCharaIdent}", Context.ConnectionId).ConfigureAwait(false);
             var connections = await GetLiveConnectionsAsync(UserCharaIdent).ConfigureAwait(false);
-            if (connections.Length == 0)
+            if (connections.Length == 0 && !isCurrentUserConnection)
+            {
+                // Une nouvelle connexion du joueur a déjà pris la relève (reconnexion rapide) : pas d'offline
+                _logger.LogCallInfo(MareHubLogger.Args("SkipOffline_Replaced", Context.ConnectionId));
+            }
+            else if (connections.Length == 0)
             {
                 // Anti-fantôme (garde-fou) : si le UID est désormais en ligne sous un AUTRE ident
                 // (changement de perso), NE PAS envoyer offline — l'utilisateur est toujours connecté
@@ -287,13 +292,27 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
             }
         }).ConfigureAwait(false);
 
+        // Revérifié après les awaits : une reconnexion a pu s'inscrire entre-temps
+        if (shouldCleanup && _userConnections.ContainsKey(UserUID))
+        {
+            _logger.LogCallInfo(MareHubLogger.Args("SkipOffline_Reconnected", Context.ConnectionId));
+            shouldCleanup = false;
+        }
+
         if (shouldCleanup)
         {
             await SafeLifecycleStep("GposeLobbyLeave", async () => { _ = await GposeLobbyLeave().ConfigureAwait(false); }).ConfigureAwait(false);
             await SafeLifecycleStep("QuestSessionLeave", async () => { _ = await QuestSessionLeave().ConfigureAwait(false); }).ConfigureAwait(false);
             await SafeLifecycleStep("WildRpWithdraw", async () => { _ = await WildRpWithdraw().ConfigureAwait(false); }).ConfigureAwait(false);
-            await SafeLifecycleStep("RemoveUserFromRedis", () => RemoveUserFromRedis()).ConfigureAwait(false);
-            await SafeLifecycleStep("SendOfflineToAllPairedUsers", async () => { _ = await SendOfflineToAllPairedUsers().ConfigureAwait(false); }).ConfigureAwait(false);
+            if (_userConnections.ContainsKey(UserUID))
+            {
+                _logger.LogCallInfo(MareHubLogger.Args("SkipOffline_Reconnected", Context.ConnectionId));
+            }
+            else
+            {
+                await SafeLifecycleStep("RemoveUserFromRedis", () => RemoveUserFromRedis()).ConfigureAwait(false);
+                await SafeLifecycleStep("SendOfflineToAllPairedUsers", async () => { _ = await SendOfflineToAllPairedUsers().ConfigureAwait(false); }).ConfigureAwait(false);
+            }
         }
 
         // Symétrique de InitPlayer (une référence par connexion) : le cache n'est libéré qu'à la dernière connexion.
