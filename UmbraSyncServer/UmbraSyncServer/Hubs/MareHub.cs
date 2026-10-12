@@ -133,7 +133,16 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
             var exists = await _redis.ExistsAsync("UID:" + UserUID).ConfigureAwait(false);
             if (!exists)
             {
-                return false;
+                // Présence expirée alors que la connexion est restée ouverte (jeu figé plus de 60 s) : seule la
+                // connexion courante du joueur la recrée. Une ancienne connexion (changement de perso, double
+                // instance) réécrirait l'ancien ident : elle reçoit false et le client se reconnecte.
+                if (!_userConnections.TryGetValue(UserUID, out var currentConnectionId)
+                    || !string.Equals(currentConnectionId, Context.ConnectionId, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                _logger.LogCallInfo(MareHubLogger.Args("PresenceRestored", Context.ConnectionId));
             }
 
             await UpdateUserOnRedis().ConfigureAwait(false);
