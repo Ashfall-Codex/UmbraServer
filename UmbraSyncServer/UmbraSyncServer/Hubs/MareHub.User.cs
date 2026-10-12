@@ -483,7 +483,8 @@ public partial class MareHub
             rpData?.ChatIcon,
             rpData?.RpLevel,
             rpData?.CharacterName, rpData?.WorldId,
-            visibility);
+            visibility,
+            rpData?.RpBannerBase64);
     }
 
     private static bool CanViewRpProfile(RpProfileVisibility visibility, bool isSelf, bool isPaired, bool isDirectPaired)
@@ -985,11 +986,32 @@ public partial class MareHub
         // --- Handle RP Profile (Character specific) ---
         if (!string.IsNullOrEmpty(dto.CharacterName) && dto.WorldId.HasValue)
         {
+            // null = ne pas toucher, chaîne vide = retirer la bannière, sinon image validée.
+            var bannerChanged = false;
+            string? newBanner = null;
+            if (dto.RpBannerBase64 != null)
+            {
+                if (dto.RpBannerBase64.Length == 0)
+                {
+                    bannerChanged = true;
+                }
+                else if (IsValidRpBanner(dto.RpBannerBase64))
+                {
+                    bannerChanged = true;
+                    newBanner = dto.RpBannerBase64;
+                }
+                else
+                {
+                    await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "The profile banner was rejected (invalid image or too large)").ConfigureAwait(false);
+                }
+            }
+
             var existingRpData = await DbContext.CharacterRpProfiles.SingleOrDefaultAsync(u => u.UserUID == dto.User.UID && u.CharacterName == dto.CharacterName && u.WorldId == dto.WorldId).ConfigureAwait(false);
             if (existingRpData != null)
             {
                 if (dto.RpDescription != null) existingRpData.RpDescription = dto.RpDescription;
                 if (dto.RpProfilePictureBase64 != null) existingRpData.RpProfilePictureBase64 = dto.RpProfilePictureBase64;
+                if (bannerChanged) existingRpData.RpBannerBase64 = newBanner;
                 if (dto.IsRpNSFW != null) existingRpData.IsRpNSFW = dto.IsRpNSFW.Value;
                 if (dto.RpFirstName != null) existingRpData.RpFirstName = dto.RpFirstName;
                 if (dto.RpLastName != null) existingRpData.RpLastName = dto.RpLastName;
@@ -1019,6 +1041,7 @@ public partial class MareHub
                     CharacterName = dto.CharacterName,
                     WorldId = dto.WorldId.Value,
                     RpProfilePictureBase64 = dto.RpProfilePictureBase64 ?? null,
+                    RpBannerBase64 = newBanner,
                     RpDescription = dto.RpDescription ?? null,
                     IsRpNSFW = dto.IsRpNSFW ?? false,
                     RpFirstName = dto.RpFirstName ?? null,
@@ -1052,6 +1075,24 @@ public partial class MareHub
 
         await Clients.Users(pairs.Select(p => p.Key)).Client_UserUpdateProfile(new(dto.User)).ConfigureAwait(false);
         await Clients.Caller.Client_UserUpdateProfile(new(dto.User)).ConfigureAwait(false);
+    }
+
+    // ~2 Mo décodés : la bannière part dans chaque fiche récupérée par les autres joueurs.
+    private const int MaxRpBannerBase64Length = 2_800_000;
+    private const int MaxRpBannerDimension = 4096;
+
+    private static bool IsValidRpBanner(string base64)
+    {
+        if (base64.Length > MaxRpBannerBase64Length) return false;
+        try
+        {
+            var info = Image.Identify(Convert.FromBase64String(base64));
+            return info != null && info.Width is > 0 and <= MaxRpBannerDimension && info.Height is > 0 and <= MaxRpBannerDimension;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     [GeneratedRegex(@"^([a-z0-9_ '+&,\.\-\{\}]+\/)+([a-z0-9_ '+&,\.\-\{\}]+\.[a-z]{3,4})$", RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.ECMAScript)]

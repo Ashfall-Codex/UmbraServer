@@ -411,6 +411,10 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("text")
                         .HasColumnName("rp_alignment");
 
+                    b.Property<string>("RpBannerBase64")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_banner_base64");
+
                     b.Property<string>("RpBuild")
                         .HasColumnType("text")
                         .HasColumnName("rp_build");
