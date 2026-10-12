@@ -43,7 +43,7 @@ public class RequestController : ControllerBase
             foreach (var file in hashList)
             {
                 _logger.LogDebug("Prerequested file: " + file);
-                var fileInfo = await _cachedFileProvider.DownloadFileWhenRequired(file).ConfigureAwait(false);
+                var fileInfo = await _cachedFileProvider.DownloadFileWhenRequired(file, HttpContext.RequestAborted).ConfigureAwait(false);
                 if (fileInfo != null)
                     fileList.Add(fileInfo);
                 else

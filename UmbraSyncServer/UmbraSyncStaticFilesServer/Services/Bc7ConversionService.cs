@@ -246,7 +246,18 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
 
                 byte[] compressed = CompressLz4(bc7Tex);
                 var outPath = FilePathUtil.GetFilePath(writeDir, altHash);
-                await File.WriteAllBytesAsync(outPath, compressed, ct).ConfigureAwait(false);
+                // Temporaire unique puis Move atomique : un lecteur ne voit jamais un fichier à moitié écrit
+                var tmpOutPath = outPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    await File.WriteAllBytesAsync(tmpOutPath, compressed, ct).ConfigureAwait(false);
+                    File.Move(tmpOutPath, outPath, true);
+                }
+                catch
+                {
+                    try { File.Delete(tmpOutPath); } catch (Exception cleanupEx) { _logger.LogDebug(cleanupEx, "BC7: could not delete temp file for {Hash}", altHash); }
+                    throw;
+                }
 
                 try
                 {

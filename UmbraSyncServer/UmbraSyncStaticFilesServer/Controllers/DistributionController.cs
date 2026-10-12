@@ -26,7 +26,7 @@ public class DistributionController : ControllerBase
     {
         _logger.LogInformation($"GetFile:{MareUser}:{file}");
 
-        var fi = await _cachedFileProvider.GetAndDownloadFile(file);
+        var fi = await _cachedFileProvider.GetAndDownloadFile(file, HttpContext.RequestAborted);
         if (fi == null) return NotFound();
 
         if (_configuration.GetValueOrDefault(nameof(StaticFilesServerConfiguration.UseXAccelRedirect), false))

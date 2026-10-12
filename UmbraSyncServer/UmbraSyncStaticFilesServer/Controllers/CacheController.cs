@@ -39,7 +39,7 @@ public class CacheController : ControllerBase
 
         foreach (var file in request.FileIds)
         {
-            var fi = await _cachedFileProvider.GetAndDownloadFile(file);
+            var fi = await _cachedFileProvider.GetAndDownloadFile(file, HttpContext.RequestAborted);
             if (fi == null)
             {
                 (missing ??= new List<string>()).Add(file);
