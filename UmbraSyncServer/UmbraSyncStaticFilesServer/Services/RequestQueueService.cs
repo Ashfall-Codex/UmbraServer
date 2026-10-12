@@ -38,8 +38,27 @@ public class RequestQueueService : IHostedService
     public void ActivateRequest(Guid request)
     {
         _logger.LogDebug("Activating request {guid}", request);
-        var req = _userQueueRequests.First(f => f != null && f.UserRequest.RequestId == request);
-        req.MarkActive();
+        // Le slot peut expirer entre IsActiveProcessing et ici (timer de 500 ms) : pas d'exception, le GET
+        // qui suit sert de toute façon la requête.
+        var req = _userQueueRequests.FirstOrDefault(f => f != null && f.UserRequest.RequestId == request);
+        req?.MarkActive();
+    }
+
+    /// <summary>
+    /// La requête a un slot vivant : le client peut télécharger (cache/get). Même critère que IsActiveProcessing.
+    /// </summary>
+    public bool HasLiveSlot(Guid request, string user)
+    {
+        return IsActiveProcessing(request, user, out _);
+    }
+
+    /// <summary>
+    /// Rejoue « prêt » par SignalR. C'était fait par accident avant : un Check qui ne trouvait pas la requête
+    /// dans la file la ré-enfilait en doublon, et le doublon renvoyait « prêt » en sortant de la file.
+    /// </summary>
+    public void ResendReady(Guid request, string user)
+    {
+        _clientReadyMessageService.SendDownloadReady(user, request);
     }
 
     public async Task EnqueueUser(UserRequest request, bool isPriority, CancellationToken token)

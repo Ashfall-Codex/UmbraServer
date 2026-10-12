@@ -16,10 +16,13 @@ public class UserCleanupService : IHostedService
     private readonly IDbContextFactory<MareDbContext> _mareDbContextFactory;
     private readonly IConfigurationService<ServerConfiguration> _configuration;
     private readonly McdfShareStorage _mcdfStorage;
+    private readonly OnlineSyncedPairCacheService _pairCacheService;
     private CancellationTokenSource _cleanupCts;
 
-    public UserCleanupService(MareMetrics metrics, ILogger<UserCleanupService> logger, IDbContextFactory<MareDbContext> mareDbContextFactory, IConfigurationService<ServerConfiguration> configuration, McdfShareStorage mcdfStorage)
+    public UserCleanupService(MareMetrics metrics, ILogger<UserCleanupService> logger, IDbContextFactory<MareDbContext> mareDbContextFactory, IConfigurationService<ServerConfiguration> configuration, McdfShareStorage mcdfStorage,
+        OnlineSyncedPairCacheService pairCacheService)
     {
+        _pairCacheService = pairCacheService;
         this.metrics = metrics;
         _logger = logger;
         _mareDbContextFactory = mareDbContextFactory;
@@ -47,11 +50,15 @@ public class UserCleanupService : IHostedService
                 CleanUpOutdatedLodestoneAuths(dbContext);
 
                 await PurgeTempInvites(dbContext).ConfigureAwait(false);
-                await PurgeExpiredTemporaryGroups(dbContext).ConfigureAwait(false);
+                var expiredGroupMembers = await PurgeExpiredTemporaryGroups(dbContext).ConfigureAwait(false);
                 await PurgeExpiredWildRpAnnouncements(dbContext, ct).ConfigureAwait(false);
                 await PurgeExpiredMcdfShares(dbContext, ct).ConfigureAwait(false);
 
                 dbContext.SaveChanges();
+
+                // Après SaveChanges : un push concurrent ne peut plus relire les anciennes paires en base.
+                if (expiredGroupMembers.Count > 0)
+                    _pairCacheService.InvalidateUsers(expiredGroupMembers);
             }
 
             await PurgeUnusedAccounts(ct).ConfigureAwait(false);
@@ -64,7 +71,8 @@ public class UserCleanupService : IHostedService
         }
     }
 
-    private async Task PurgeExpiredTemporaryGroups(MareDbContext dbContext)
+    // Retourne les membres des syncshells expirées : leurs caches de destinataires doivent être vidés.
+    private async Task<List<string>> PurgeExpiredTemporaryGroups(MareDbContext dbContext)
     {
         try
         {
@@ -74,15 +82,25 @@ public class UserCleanupService : IHostedService
                 .ToListAsync()
                 .ConfigureAwait(false);
 
-            if (expiredGroups.Count == 0) return;
+            if (expiredGroups.Count == 0) return [];
 
             _logger.LogInformation("Cleaning up {count} expired temporary syncshells", expiredGroups.Count);
 
+            var expiredGids = expiredGroups.Select(g => g.GID).ToList();
+            var members = await dbContext.GroupPairs
+                .Where(p => expiredGids.Contains(p.GroupGID))
+                .Select(p => p.GroupUserUID)
+                .Distinct()
+                .ToListAsync()
+                .ConfigureAwait(false);
+
             dbContext.Groups.RemoveRange(expiredGroups);
+            return members;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Error during temporary syncshell purge");
+            return [];
         }
     }
 

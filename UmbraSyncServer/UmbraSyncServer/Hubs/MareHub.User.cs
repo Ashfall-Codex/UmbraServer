@@ -634,14 +634,13 @@ public partial class MareHub
         List<string> validRecipients;
         if (!allCached)
         {
+            var cacheVersion = _pairCacheService.GetVersion(UserUID);
             var allPairedUsers = await GetAllPairedUnpausedUsers().ConfigureAwait(false);
             validRecipients = allPairedUsers
                 .Where(uid => recipientUids.Contains(uid, StringComparer.Ordinal))
                 .ToList();
 
-            await _pairCacheService
-                .CachePlayers(UserUID, allPairedUsers, Context.ConnectionAborted)
-                .ConfigureAwait(false);
+            _pairCacheService.CachePlayers(UserUID, allPairedUsers, cacheVersion, Context.ConnectionAborted);
 
             _logger.LogCallInfo(MareHubLogger.Args("cache_miss", "pairs", allPairedUsers.Count, "recipients", validRecipients.Count));
         }
@@ -683,11 +682,12 @@ public partial class MareHub
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            if (hashes.Count == 0) return;
-
+            // Purge avant le return : les clés « :invalid: » sont ajoutées même pour un envoi sans hash.
             var now = DateTime.UtcNow;
             foreach (var stale in _pushIntegrityChecked.Where(kvp => now - kvp.Value > PushIntegrityTtl).Select(kvp => kvp.Key).ToList())
                 _pushIntegrityChecked.TryRemove(stale, out _);
+
+            if (hashes.Count == 0) return;
 
             // Le même jeu de données est repoussé à chaque nouveau pair visible : une seule vérification suffit.
             if (!_pushIntegrityChecked.TryAdd(UserUID + ":" + dto.CharaData.DataHash.Value, now)) return;

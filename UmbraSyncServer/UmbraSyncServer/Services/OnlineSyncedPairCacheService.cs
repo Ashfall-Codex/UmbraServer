@@ -11,6 +11,9 @@ public class OnlineSyncedPairCacheService
 {
     private readonly Dictionary<string, PairCacheEntry> _userCaches = new(StringComparer.Ordinal);
     private readonly Lock _cachesLock = new();
+    // Compteur global : chaque entrée créée ou invalidée reçoit un numéro jamais réutilisé, même après
+    // retrait puis recréation de l'entrée (pas de cas ABA).
+    private long _versionCounter;
     private readonly ILogger<OnlineSyncedPairCacheService> _logger;
     private readonly ILoggerFactory _loggerFactory;
     private readonly MareMetrics _mareMetrics;
@@ -78,6 +81,7 @@ public class OnlineSyncedPairCacheService
                 if (_userCaches.TryGetValue(uid, out var entry))
                 {
                     entry.Cache.Clear();
+                    entry.Version = Interlocked.Increment(ref _versionCounter);
                     invalidated++;
                 }
             }
@@ -100,18 +104,34 @@ public class OnlineSyncedPairCacheService
         return Task.FromResult(cache.AreAllPlayersCached(recipientUids));
     }
 
-    public Task CachePlayers(string senderUid, List<string> validPairUids, CancellationToken ct)
+    // À lire AVANT le calcul des destinataires depuis la base, et à repasser à CachePlayers : si une
+    // invalidation passe entre les deux, l'écriture est ignorée au lieu de repeupler le cache avec
+    // une liste périmée (valide 60 min).
+    public long GetVersion(string senderUid)
+    {
+        lock (_cachesLock)
+        {
+            return GetOrCreateEntry(senderUid).Version;
+        }
+    }
+
+    // Retourne false si le cache a été invalidé depuis GetVersion : rien n'est écrit.
+    public bool CachePlayers(string senderUid, List<string> validPairUids, long version, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
-        PairCache cache;
         lock (_cachesLock)
         {
-            cache = GetOrCreateEntry(senderUid).Cache;
-        }
+            var entry = GetOrCreateEntry(senderUid);
+            if (entry.Version != version)
+            {
+                _logger.LogDebug("PairCache:StaleWrite {UserUid} ignored", senderUid);
+                return false;
+            }
 
-        cache.CachePlayers(validPairUids);
-        return Task.CompletedTask;
+            entry.Cache.CachePlayers(validPairUids);
+            return true;
+        }
     }
 
     public int GetCachedUserCount()
@@ -129,7 +149,10 @@ public class OnlineSyncedPairCacheService
         if (!_userCaches.TryGetValue(userUid, out var entry))
         {
             _logger.LogDebug("PairCache:Init {UserUid}", userUid);
-            entry = new PairCacheEntry(new PairCache(_loggerFactory.CreateLogger<PairCache>(), userUid, _mareMetrics));
+            entry = new PairCacheEntry(new PairCache(_loggerFactory.CreateLogger<PairCache>(), userUid, _mareMetrics))
+            {
+                Version = Interlocked.Increment(ref _versionCounter),
+            };
             _userCaches[userUid] = entry;
             _mareMetrics.IncGauge(MetricsAPI.GaugePairCacheUsers);
         }
@@ -150,6 +173,7 @@ public class OnlineSyncedPairCacheService
     {
         public PairCache Cache { get; } = cache;
         public int RefCount { get; set; }
+        public long Version { get; set; }
     }
 
     private sealed class PairCache

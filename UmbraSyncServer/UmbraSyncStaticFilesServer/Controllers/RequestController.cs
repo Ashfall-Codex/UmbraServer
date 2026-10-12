@@ -74,9 +74,19 @@ public class RequestController : ControllerBase
     {
         try
         {
-            if (!_requestQueue.StillEnqueued(requestId, MareUser, IsPriority))
-                await _requestQueue.EnqueueUser(new(requestId, MareUser, files.ToList()), IsPriority, HttpContext.RequestAborted);
-            return Ok();
+            // Le corps est lu par les clients récents ; les anciens font EnsureSuccessStatusCode et l'ignorent.
+            if (_requestQueue.HasLiveSlot(requestId, MareUser))
+            {
+                // « prêt » n'existe que par SignalR : on le rejoue, sans ré-enfiler de doublon.
+                _requestQueue.ResendReady(requestId, MareUser);
+                return Ok(new { ready = true, state = "ready" });
+            }
+
+            if (_requestQueue.StillEnqueued(requestId, MareUser, IsPriority))
+                return Ok(new { ready = false, state = "queued" });
+
+            await _requestQueue.EnqueueUser(new(requestId, MareUser, files.ToList()), IsPriority, HttpContext.RequestAborted);
+            return Ok(new { ready = false, state = "requeued" });
         }
         catch (OperationCanceledException) { return BadRequest(); }
     }
