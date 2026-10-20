@@ -87,7 +87,8 @@ public class GeoIPService : IHostedService
 
                 var useGeoIP = _mareConfiguration.GetValueOrDefault(nameof(AuthServiceConfiguration.UseGeoIP), false);
                 var cityFile = _mareConfiguration.GetValueOrDefault(nameof(AuthServiceConfiguration.GeoIPDbCityFile), string.Empty);
-                var lastWriteTime = new FileInfo(cityFile).LastWriteTimeUtc;
+                // GeoIP désactivé : pas de fichier à lire (un chemin vide ferait lever FileInfo toutes les minutes)
+                var lastWriteTime = useGeoIP ? new FileInfo(cityFile).LastWriteTimeUtc : default;
                 if (useGeoIP && (!string.Equals(cityFile, _cityFile, StringComparison.OrdinalIgnoreCase) || lastWriteTime != _dbLastWriteTime))
                 {
                     _cityFile = cityFile;
