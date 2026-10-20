@@ -24,9 +24,21 @@ DOMAIN="test"
 APPS=(server auth files)
 AGENT="net.umbrasync.dev-update"
 AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT.plist"
+SEAWEED_IMAGE="chrislusf/seaweedfs:4.48"   # version figée : ne jamais suivre latest
 
 log() { echo "$(date '+%F %T') $*"; }
 die() { echo "Erreur : $*" >&2; exit 1; }
+
+# tmo <secondes> <commande...> : équivalent de timeout(1), absent de macOS.
+# Un conteneur saturé ne répond plus aux « container exec » : sans délai, le script attendrait indéfiniment.
+tmo() {
+  local s="$1"; shift
+  "$@" & local pid=$!
+  ( sleep "$s"; kill -9 "$pid" 2>/dev/null ) & local w=$!
+  local rc=0; wait "$pid" 2>/dev/null || rc=$?
+  kill "$w" 2>/dev/null || true; wait "$w" 2>/dev/null || true
+  return "$rc"
+}
 
 load_env() {
   [ -f "$DIR/.env" ] || die ".env absent : lance d'abord ./dev-container.sh setup"
@@ -64,7 +76,7 @@ run() {  # run <nom> <args container run...>
 wait_for() {  # wait_for <service> <commande...>
   local s="$1"; shift
   for _ in $(seq 1 60); do
-    container exec "$P-$s" "$@" >/dev/null 2>&1 && return 0
+    tmo 10 container exec "$P-$s" "$@" >/dev/null 2>&1 && return 0
     sleep 2
   done
   die "$P-$s ne répond pas au bout de 2 minutes (./dev-container.sh logs $s)"
@@ -85,7 +97,9 @@ infra() {
 
   if ! is_running s3; then
     # SeaweedFS remplace le bucket Scaleway ; lecture anonyme sur le bucket, comme le CDN en prod.
-    # 1 Gio minimum : à 512 Mio, il sature pendant un gros envoi et relit le disque en boucle.
+    # SeaweedFS est écrit en Go : sans limite, son tas grimpe vers 700 Mio pendant un gros envoi.
+    # Dans une micro-VM sans swap, le noyau évince alors jusqu'au code du programme et relit le disque
+    # en boucle (CPU à 100 %, centaines de Gio lus, plus aucune réponse). GOMEMLIMIT le garde sous 400 Mio.
     mkdir -p "$STATE/s3"
     cat > "$STATE/s3/s3.json" <<EOF
 {"identities":[
@@ -94,8 +108,8 @@ infra() {
  {"name":"anonymous","actions":["Read:umbrasync"]}
 ]}
 EOF
-    run s3 -m 1G -c 1 -p 8333:8333 -v "$P-s3data:/data" -v "$STATE/s3:/config:ro" \
-      chrislusf/seaweedfs:latest server -dir=/data -s3 -s3.port=8333 -s3.config=/config/s3.json \
+    run s3 -m 1G -c 1 -e GOMEMLIMIT=400MiB -p 8333:8333 -v "$P-s3data:/data" -v "$STATE/s3:/config:ro" \
+      "$SEAWEED_IMAGE" server -dir=/data -s3 -s3.port=8333 -s3.config=/config/s3.json \
       -master.volumeSizeLimitMB=1024 -volume.max=0
   fi
 
@@ -104,12 +118,12 @@ EOF
   wait_for s3 wget -q -O /dev/null http://127.0.0.1:9333/cluster/status
 
   local weed='weed shell -master=localhost:9333'
-  if ! container exec "$P-s3" sh -c "echo s3.bucket.list | $weed" 2>/dev/null | grep -q umbrasync; then
+  if ! tmo 20 container exec "$P-s3" sh -c "echo s3.bucket.list | $weed" 2>/dev/null | grep -q umbrasync; then
     for _ in $(seq 1 15); do
-      container exec "$P-s3" sh -c "echo 's3.bucket.create -name umbrasync' | $weed" >/dev/null 2>&1 && break
+      tmo 20 container exec "$P-s3" sh -c "echo 's3.bucket.create -name umbrasync' | $weed" >/dev/null 2>&1 && break
       sleep 2
     done
-    container exec "$P-s3" sh -c "echo s3.bucket.list | $weed" | grep -q umbrasync \
+    tmo 20 container exec "$P-s3" sh -c "echo s3.bucket.list | $weed" | grep -q umbrasync \
       || die "le bucket umbrasync n'a pas pu être créé (./dev-container.sh logs s3)"
   fi
 }
@@ -128,7 +142,7 @@ apps() {
   # Test depuis le conteneur Redis (nc de busybox), par le même DNS .test que les services.
   local ready=0
   for _ in $(seq 1 60); do
-    container exec "$P-redis" nc -z -w 2 "$P-server.$DOMAIN" 6100 >/dev/null 2>&1 && { ready=1; break; }
+    tmo 10 container exec "$P-redis" nc -z -w 2 "$P-server.$DOMAIN" 6100 >/dev/null 2>&1 && { ready=1; break; }
     is_running server || die "mare-server s'est arrêté au démarrage (./dev-container.sh logs server)"
     sleep 2
   done
