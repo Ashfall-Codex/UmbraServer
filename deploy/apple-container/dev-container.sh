@@ -85,6 +85,7 @@ infra() {
 
   if ! is_running s3; then
     # SeaweedFS remplace le bucket Scaleway ; lecture anonyme sur le bucket, comme le CDN en prod.
+    # 1 Gio minimum : à 512 Mio, il sature pendant un gros envoi et relit le disque en boucle.
     mkdir -p "$STATE/s3"
     cat > "$STATE/s3/s3.json" <<EOF
 {"identities":[
@@ -93,7 +94,7 @@ infra() {
  {"name":"anonymous","actions":["Read:umbrasync"]}
 ]}
 EOF
-    run s3 -m 512M -c 1 -p 8333:8333 -v "$P-s3data:/data" -v "$STATE/s3:/config:ro" \
+    run s3 -m 1G -c 1 -p 8333:8333 -v "$P-s3data:/data" -v "$STATE/s3:/config:ro" \
       chrislusf/seaweedfs:latest server -dir=/data -s3 -s3.port=8333 -s3.config=/config/s3.json \
       -master.volumeSizeLimitMB=1024 -volume.max=0
   fi
