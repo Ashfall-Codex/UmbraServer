@@ -149,7 +149,7 @@ apps() {
   [ "$ready" = 1 ] || log "Attention : mare-server n'écoute toujours pas sur 6100 après 2 minutes, on continue"
   run auth -m 512M -c 1 --env-file "$c/auth.env" "${dotnet[@]}" "$(image auth "$tag")"
   run files -m 1536M -c 2 --env-file "$c/files.env" "${dotnet[@]}" \
-    -e "MareSynchronos__CdnFullUrl=http://$PUBLIC_HOST:8333/umbrasync" \
+    -e "MareSynchronos__CdnFullUrl=http://$PUBLIC_HOST/umbrasync" \
     -e "MareSynchronos__ScalewayAccessKey=$MINIO_ROOT_USER" -e "MareSynchronos__ScalewaySecretKey=$MINIO_ROOT_PASSWORD" \
     -v "$P-filescache:/data/cache" "$(image files "$tag")"
   sleep 3
