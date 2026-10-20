@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+**/.vs/
+**/.idea/
+**/*.user
+.git
+deploy/apple-container/.env
+deploy/apple-container/state/
