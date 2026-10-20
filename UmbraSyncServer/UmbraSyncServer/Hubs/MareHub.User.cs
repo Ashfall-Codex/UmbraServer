@@ -12,6 +12,7 @@ using MareSynchronosShared.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 
@@ -736,7 +737,15 @@ public partial class MareHub
         {
             await using var db = await _dbContextFactory.CreateDbContextAsync().ConfigureAwait(false);
 
-            var list = textures.ToList();
+            // Toutes les requêtes verrouillent les lignes dans le même ordre, sinon deux joueurs qui partagent
+            // des mods s'interbloquent (40P01). Hash en majuscules comme file_caches ; deux casses d'un même hash
+            // fusionnent en gardant Normal, pour ne jamais compresser une normal map en BC7.
+            var list = textures
+                .GroupBy(t => t.Key.ToUpperInvariant(), StringComparer.Ordinal)
+                .Select(g => new KeyValuePair<string, Bc7TextureRole>(g.Key,
+                    g.Any(t => t.Value == Bc7TextureRole.Normal) ? Bc7TextureRole.Normal : g.First().Value))
+                .OrderBy(t => t.Key, StringComparer.Ordinal)
+                .ToList();
             var sb = new StringBuilder("INSERT INTO file_bc7_conversions (source_hash, role, state, updated_at) VALUES ");
             var parameters = new object[list.Count * 2];
             for (int i = 0; i < list.Count; i++)
@@ -751,7 +760,17 @@ public partial class MareHub
               .Append(" WHERE EXCLUDED.role = ").Append(normalRole)
               .Append(" AND file_bc7_conversions.role <> ").Append(normalRole).Append(';');
 
-            await db.Database.ExecuteSqlRawAsync(sb.ToString(), parameters).ConfigureAwait(false);
+            var sql = sb.ToString();
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(sql, parameters).ConfigureAwait(false);
+            }
+            catch (PostgresException ex) when (string.Equals(ex.SqlState, PostgresErrorCodes.DeadlockDetected, StringComparison.Ordinal))
+            {
+                // Le tri rend l'interblocage improbable, pas impossible : une seule nouvelle tentative
+                await Task.Delay(Random.Shared.Next(50, 151)).ConfigureAwait(false);
+                await db.Database.ExecuteSqlRawAsync(sql, parameters).ConfigureAwait(false);
+            }
         }
         catch (Exception ex)
         {
