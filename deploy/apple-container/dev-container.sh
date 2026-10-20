@@ -123,12 +123,15 @@ apps() {
 
   run server -m 3G -c 2 --env-file "$c/server.env" "${dotnet[@]}" \
     -e "MareSynchronos__CdnFullUrl=http://$PUBLIC_HOST" -v "$P-mcdf:/data/mcdf" "$(image server "$tag")"
-  # mare-server applique les migrations EF au démarrage : auth et files attendent qu'il ait fini.
+  # mare-server applique les migrations EF avant d'ouvrir son port : auth et files attendent qu'il écoute.
+  # Test depuis le conteneur Redis (nc de busybox), par le même DNS .test que les services.
+  local ready=0
   for _ in $(seq 1 60); do
-    container logs "$P-server" 2>/dev/null | grep -q "Application started" && break
+    container exec "$P-redis" nc -z -w 2 "$P-server.$DOMAIN" 6100 >/dev/null 2>&1 && { ready=1; break; }
     is_running server || die "mare-server s'est arrêté au démarrage (./dev-container.sh logs server)"
     sleep 2
   done
+  [ "$ready" = 1 ] || log "Attention : mare-server n'écoute toujours pas sur 6100 après 2 minutes, on continue"
   run auth -m 512M -c 1 --env-file "$c/auth.env" "${dotnet[@]}" "$(image auth "$tag")"
   run files -m 1536M -c 2 --env-file "$c/files.env" "${dotnet[@]}" \
     -e "MareSynchronos__CdnFullUrl=http://$PUBLIC_HOST:8333/umbrasync" \
