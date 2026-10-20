@@ -265,6 +265,7 @@ public partial class MareHub
                 RpDescription = r.RpDescription,
                 RpProfilePictureBase64 = r.RpProfilePictureBase64,
                 RpBannerBase64 = r.RpBannerBase64,
+                RpCardStyle = r.RpCardStyle,
                 RpAge = r.RpAge,
                 RpRace = r.RpRace,
                 RpEthnicity = r.RpEthnicity,

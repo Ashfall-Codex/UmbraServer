@@ -501,7 +501,8 @@ public partial class MareHub
             rpData?.RpLevel,
             rpData?.CharacterName, rpData?.WorldId,
             visibility,
-            rpData?.RpBannerBase64);
+            rpData?.RpBannerBase64,
+            rpData?.RpCardStyle);
     }
 
     private static bool CanViewRpProfile(RpProfileVisibility visibility, bool isSelf, bool isPaired, bool isDirectPaired)
@@ -1041,12 +1042,33 @@ public partial class MareHub
                 }
             }
 
+            // Même contrat pour le style de la carte : null = ne pas toucher, chaîne vide = style par défaut.
+            var cardStyleChanged = false;
+            string? newCardStyle = null;
+            if (dto.RpCardStyle != null)
+            {
+                if (dto.RpCardStyle.Length == 0)
+                {
+                    cardStyleChanged = true;
+                }
+                else if (IsValidRpCardStyle(dto.RpCardStyle))
+                {
+                    cardStyleChanged = true;
+                    newCardStyle = dto.RpCardStyle;
+                }
+                else
+                {
+                    await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "The profile card style was rejected (invalid or too long)").ConfigureAwait(false);
+                }
+            }
+
             var existingRpData = await DbContext.CharacterRpProfiles.SingleOrDefaultAsync(u => u.UserUID == dto.User.UID && u.CharacterName == dto.CharacterName && u.WorldId == dto.WorldId).ConfigureAwait(false);
             if (existingRpData != null)
             {
                 if (dto.RpDescription != null) existingRpData.RpDescription = dto.RpDescription;
                 if (dto.RpProfilePictureBase64 != null) existingRpData.RpProfilePictureBase64 = dto.RpProfilePictureBase64;
                 if (bannerChanged) existingRpData.RpBannerBase64 = newBanner;
+                if (cardStyleChanged) existingRpData.RpCardStyle = newCardStyle;
                 if (dto.IsRpNSFW != null) existingRpData.IsRpNSFW = dto.IsRpNSFW.Value;
                 if (dto.RpFirstName != null) existingRpData.RpFirstName = dto.RpFirstName;
                 if (dto.RpLastName != null) existingRpData.RpLastName = dto.RpLastName;
@@ -1077,6 +1099,7 @@ public partial class MareHub
                     WorldId = dto.WorldId.Value,
                     RpProfilePictureBase64 = dto.RpProfilePictureBase64 ?? null,
                     RpBannerBase64 = newBanner,
+                    RpCardStyle = newCardStyle,
                     RpDescription = dto.RpDescription ?? null,
                     IsRpNSFW = dto.IsRpNSFW ?? false,
                     RpFirstName = dto.RpFirstName ?? null,
@@ -1125,6 +1148,23 @@ public partial class MareHub
             return info != null && info.Width is > 0 and <= MaxRpBannerDimension && info.Height is > 0 and <= MaxRpBannerDimension;
         }
         catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    // Même plafond que le client (ProfileCardStyle.MaxJsonLength) : quelques couleurs et réglages, jamais plus.
+    private const int MaxRpCardStyleLength = 1024;
+
+    private static bool IsValidRpCardStyle(string json)
+    {
+        if (json.Length > MaxRpCardStyleLength) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 4 });
+            return document.RootElement.ValueKind == JsonValueKind.Object;
+        }
+        catch (JsonException)
         {
             return false;
         }
