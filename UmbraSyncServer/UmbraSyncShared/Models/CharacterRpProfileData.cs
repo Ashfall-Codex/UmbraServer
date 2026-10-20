@@ -19,6 +19,7 @@ public class CharacterRpProfileData
 
     public string? RpProfilePictureBase64 { get; set; }
     public string? RpBannerBase64 { get; set; }
+    public string? RpCardStyle { get; set; }
     public string? RpDescription { get; set; }
     public bool IsRpNSFW { get; set; }
     public string? RpFirstName { get; set; }

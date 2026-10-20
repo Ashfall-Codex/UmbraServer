@@ -419,6 +419,10 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("text")
                         .HasColumnName("rp_build");
 
+                    b.Property<string>("RpCardStyle")
+                        .HasColumnType("text")
+                        .HasColumnName("rp_card_style");
+
                     b.Property<string>("RpCustomFields")
                         .HasColumnType("text")
                         .HasColumnName("rp_custom_fields");
