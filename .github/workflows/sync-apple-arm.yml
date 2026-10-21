@@ -1,10 +1,10 @@
 # Chaque push sur main est fusionné dans apple-arm-support, puis les images Apple Silicon sont reconstruites.
-# Atrama (agent launchd) récupère ensuite la nouvelle version tout seul : main devient testable en pré-prod
+# Le Mac de pré-prod (agent launchd) récupère ensuite la nouvelle version tout seul : main devient testable en pré-prod
 # quelques minutes après le push, avant tout ./deploy.sh vers la prod.
 #
 # La fusion passe par l'API GitHub : le commit de fusion est signé par GitHub (« Verified »),
 # auteur github-actions[bot]. En cas de conflit, le job échoue (notification GitHub) et rien n'est poussé :
-# il faut alors fusionner à la main sur Adhara.
+# il faut alors fusionner à la main (git merge -S main).
 name: Synchro main → apple-arm-support
 
 on:
@@ -41,7 +41,7 @@ jobs:
           case "$status" in
             201) echo "Fusion faite : apple-arm-support contient maintenant $short" ;;
             204) echo "Rien à fusionner : apple-arm-support contient déjà $short" ;;
-            409) echo "::error::Conflit entre main ($short) et apple-arm-support : fusionne à la main sur Adhara (git merge -S main)"; exit 1 ;;
+            409) echo "::error::Conflit entre main ($short) et apple-arm-support : fusionne à la main (git merge -S main)"; exit 1 ;;
             *)   echo "::error::Fusion impossible (HTTP $status)"; echo "$out" | tail -5; exit 1 ;;
           esac
           echo "status=$status" >> "$GITHUB_OUTPUT"

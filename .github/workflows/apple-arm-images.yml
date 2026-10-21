@@ -1,5 +1,5 @@
 # Images linux/arm64 de server, auth et files pour l'environnement de dev sur Mac Apple Silicon.
-# Déclenché uniquement par un push sur apple-arm-support. Atrama interroge GHCR et déploie
+# Déclenché par un push sur apple-arm-support (ou par la synchro depuis main). Le Mac de pré-prod interroge GHCR et déploie
 # (deploy/apple-container/dev-container.sh update, lancé par launchd).
 #
 # Tags publiés : ghcr.io/ashfall-codex/umbra-<service>:apple-arm-support et :sha-<7 caractères>.
