@@ -22,6 +22,9 @@ public partial class MareHub
         if (request.Location == null)
             return null;
 
+        // Le gérant désigné doit être un personnage de l'appelant, sinon on exposerait la fiche d'un autre joueur.
+        var managerRpProfileId = await OwnsRpProfileAsync(request.ManagerRpProfileId).ConfigureAwait(false) ? request.ManagerRpProfileId : null;
+
         var now = DateTime.UtcNow;
         var establishment = new Establishment
         {
@@ -36,7 +39,7 @@ public partial class MareHub
             IsPublic = request.IsPublic,
             LogoImageBase64 = request.LogoImageBase64,
             BannerImageBase64 = request.BannerImageBase64,
-            ManagerRpProfileId = request.ManagerRpProfileId,
+            ManagerRpProfileId = managerRpProfileId,
             ShowManagerOnProfile = true,
             CreatedUtc = now,
             UpdatedUtc = now,
@@ -84,7 +87,8 @@ public partial class MareHub
         establishment.IsPublic = request.IsPublic;
         establishment.LogoImageBase64 = request.LogoImageBase64;
         establishment.BannerImageBase64 = request.BannerImageBase64;
-        establishment.ManagerRpProfileId = request.ManagerRpProfileId;
+        if (request.ManagerRpProfileId != establishment.ManagerRpProfileId)
+            establishment.ManagerRpProfileId = await OwnsRpProfileAsync(request.ManagerRpProfileId).ConfigureAwait(false) ? request.ManagerRpProfileId : null;
         establishment.ShowManagerOnProfile = request.ShowManagerOnProfile;
         establishment.UpdatedUtc = DateTime.UtcNow;
 
@@ -108,6 +112,10 @@ public partial class MareHub
         _logger.LogCallInfo(MareHubLogger.Args(request.Id, "Updated"));
         return true;
     }
+
+    private async Task<bool> OwnsRpProfileAsync(int? rpProfileId)
+        => rpProfileId is { } id
+           && await DbContext.CharacterRpProfiles.AsNoTracking().AnyAsync(p => p.Id == id && p.UserUID == UserUID).ConfigureAwait(false);
 
     [Authorize(Policy = "Identified")]
     public async Task<bool> EstablishmentDelete(Guid id)

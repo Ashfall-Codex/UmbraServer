@@ -87,6 +87,27 @@ namespace MareSynchronosServer.Utils
             };
         }
 
+        public static EstablishmentAffiliationDto ToEstablishmentAffiliationDto(this EstablishmentAffiliation affiliation)
+        {
+            return new EstablishmentAffiliationDto
+            {
+                Id = affiliation.Id,
+                EstablishmentId = affiliation.EstablishmentId,
+                EstablishmentName = affiliation.Establishment?.Name ?? string.Empty,
+                UserUID = affiliation.UserUID,
+                UserAlias = affiliation.User?.Alias,
+                RpProfileId = affiliation.RpProfileId,
+                CharacterName = affiliation.RpProfile?.CharacterName ?? string.Empty,
+                WorldId = affiliation.RpProfile?.WorldId ?? 0,
+                RpFirstName = affiliation.RpProfile?.RpFirstName,
+                RpLastName = affiliation.RpProfile?.RpLastName,
+                Status = (UmbraSync.API.Dto.Establishment.EstablishmentAffiliationStatus)(int)affiliation.Status,
+                ShowOnProfile = affiliation.ShowOnProfile,
+                Message = affiliation.Message,
+                RequestedUtc = affiliation.RequestedUtc
+            };
+        }
+
         public static EstablishmentEventDto ToEstablishmentEventDto(this EstablishmentEvent evt)
         {
             return new EstablishmentEventDto

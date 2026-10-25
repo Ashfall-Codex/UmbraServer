@@ -241,6 +241,7 @@ public partial class MareHub
         await AddRgpdGroupBans(export).ConfigureAwait(false);
         await AddRgpdPermissions(export).ConfigureAwait(false);
         await AddRgpdScenarioAccessAndReports(export).ConfigureAwait(false);
+        await AddRgpdEstablishmentAffiliations(export).ConfigureAwait(false);
 
         return export;
     }
@@ -398,6 +399,27 @@ public partial class MareHub
                 IndividualIsSticky = p.IndividualIsSticky,
             })
             .SingleOrDefaultAsync().ConfigureAwait(false);
+    }
+
+    private async Task AddRgpdEstablishmentAffiliations(RgpdDataExportDto export)
+    {
+        export.EstablishmentAffiliations = await DbContext.EstablishmentAffiliations.AsNoTracking()
+            .Where(a => a.UserUID == UserUID)
+            .OrderBy(a => a.RequestedUtc)
+            .Select(a => new RgpdEstablishmentAffiliationDto
+            {
+                Id = a.Id,
+                EstablishmentId = a.EstablishmentId,
+                EstablishmentName = a.Establishment.Name,
+                CharacterName = a.RpProfile.CharacterName,
+                WorldId = a.RpProfile.WorldId,
+                Status = (int)a.Status,
+                ShowOnProfile = a.ShowOnProfile,
+                Message = a.Message,
+                RequestedUtc = a.RequestedUtc,
+                RespondedUtc = a.RespondedUtc
+            })
+            .ToListAsync().ConfigureAwait(false);
     }
 
     private async Task AddRgpdScenarioAccessAndReports(RgpdDataExportDto export)

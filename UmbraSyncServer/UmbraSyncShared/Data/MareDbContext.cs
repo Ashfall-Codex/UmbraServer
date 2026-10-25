@@ -69,6 +69,7 @@ public class MareDbContext : DbContext
     public DbSet<HousingScenarioAllowedEditor> HousingScenarioAllowedEditors { get; set; }
     public DbSet<Establishment> Establishments { get; set; }
     public DbSet<EstablishmentEvent> EstablishmentEvents { get; set; }
+    public DbSet<EstablishmentAffiliation> EstablishmentAffiliations { get; set; }
     public DbSet<WildRpAnnouncement> WildRpAnnouncements { get; set; }
     public DbSet<UserPermissionSet> Permissions { get; set; }
     public DbSet<UserDefaultPreferredPermission> UserDefaultPreferredPermissions { get; set; }
@@ -355,6 +356,19 @@ public class MareDbContext : DbContext
         mb.Entity<EstablishmentEvent>().Property(e => e.StartsAtUtc).HasColumnType("timestamp with time zone");
         mb.Entity<EstablishmentEvent>().Property(e => e.EndsAtUtc).HasColumnType("timestamp with time zone");
         mb.Entity<EstablishmentEvent>().Property(e => e.CreatedUtc).HasColumnType("timestamp with time zone");
+
+        mb.Entity<EstablishmentAffiliation>().ToTable("establishment_affiliations");
+        mb.Entity<EstablishmentAffiliation>().HasIndex(a => new { a.EstablishmentId, a.RpProfileId }).IsUnique();
+        mb.Entity<EstablishmentAffiliation>().HasIndex(a => a.RpProfileId);
+        mb.Entity<EstablishmentAffiliation>().HasIndex(a => a.UserUID);
+        mb.Entity<EstablishmentAffiliation>().Property(a => a.RequestedUtc).HasColumnType("timestamp with time zone");
+        mb.Entity<EstablishmentAffiliation>().Property(a => a.RespondedUtc).HasColumnType("timestamp with time zone");
+        mb.Entity<EstablishmentAffiliation>().HasOne(a => a.Establishment).WithMany()
+            .HasForeignKey(a => a.EstablishmentId).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<EstablishmentAffiliation>().HasOne(a => a.RpProfile).WithMany()
+            .HasForeignKey(a => a.RpProfileId).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<EstablishmentAffiliation>().HasOne(a => a.User).WithMany()
+            .HasForeignKey(a => a.UserUID).OnDelete(DeleteBehavior.Cascade);
     }
 
     private static void ConfigureWildRpEntities(ModelBuilder mb)
