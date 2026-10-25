@@ -139,6 +139,8 @@ public static class SharedDbFunctions
             .Include(s => s.AllowedEditors)
             .Where(s => s.OwnerUID == uid).ToListAsync().ConfigureAwait(false));
 
+        dbContext.EstablishmentAffiliations.RemoveRange(await dbContext.EstablishmentAffiliations.Where(a => a.UserUID == uid).ToListAsync().ConfigureAwait(false));
+
         dbContext.Establishments.RemoveRange(await dbContext.Establishments
             .Include(e => e.Events)
             .Where(e => e.OwnerUID == uid).ToListAsync().ConfigureAwait(false));
