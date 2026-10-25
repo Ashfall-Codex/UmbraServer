@@ -663,6 +663,64 @@ namespace MareSynchronosServer.Migrations
                     b.ToTable("establishments", (string)null);
                 });
 
+            modelBuilder.Entity("MareSynchronosShared.Models.EstablishmentAffiliation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("EstablishmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("establishment_id");
+
+                    b.Property<string>("Message")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("message");
+
+                    b.Property<DateTime>("RequestedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_utc");
+
+                    b.Property<DateTime?>("RespondedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("responded_utc");
+
+                    b.Property<int>("RpProfileId")
+                        .HasColumnType("integer")
+                        .HasColumnName("rp_profile_id");
+
+                    b.Property<bool>("ShowOnProfile")
+                        .HasColumnType("boolean")
+                        .HasColumnName("show_on_profile");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer")
+                        .HasColumnName("status");
+
+                    b.Property<string>("UserUID")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("user_uid");
+
+                    b.HasKey("Id")
+                        .HasName("pk_establishment_affiliations");
+
+                    b.HasIndex("RpProfileId")
+                        .HasDatabaseName("ix_establishment_affiliations_rp_profile_id");
+
+                    b.HasIndex("UserUID")
+                        .HasDatabaseName("ix_establishment_affiliations_user_uid");
+
+                    b.HasIndex("EstablishmentId", "RpProfileId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_establishment_affiliations_establishment_id_rp_profile_id");
+
+                    b.ToTable("establishment_affiliations", (string)null);
+                });
+
             modelBuilder.Entity("MareSynchronosShared.Models.EstablishmentEvent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2001,6 +2059,36 @@ namespace MareSynchronosServer.Migrations
                     b.Navigation("ManagerRpProfile");
 
                     b.Navigation("Owner");
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.EstablishmentAffiliation", b =>
+                {
+                    b.HasOne("MareSynchronosShared.Models.Establishment", "Establishment")
+                        .WithMany()
+                        .HasForeignKey("EstablishmentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_establishment_affiliations_establishments_establishment_id");
+
+                    b.HasOne("MareSynchronosShared.Models.CharacterRpProfileData", "RpProfile")
+                        .WithMany()
+                        .HasForeignKey("RpProfileId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_establishment_affiliations_character_rp_profiles_rp_profile");
+
+                    b.HasOne("MareSynchronosShared.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserUID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_establishment_affiliations_users_user_uid");
+
+                    b.Navigation("Establishment");
+
+                    b.Navigation("RpProfile");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("MareSynchronosShared.Models.EstablishmentEvent", b =>

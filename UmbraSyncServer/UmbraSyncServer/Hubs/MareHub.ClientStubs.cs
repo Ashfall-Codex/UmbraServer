@@ -2,6 +2,7 @@
 using UmbraSync.API.Data.Enum;
 using UmbraSync.API.Dto;
 using UmbraSync.API.Dto.CharaData;
+using UmbraSync.API.Dto.Establishment;
 using UmbraSync.API.Dto.Group;
 using UmbraSync.API.Dto.QuestSync;
 using UmbraSync.API.Dto.User;
@@ -81,5 +82,7 @@ namespace MareSynchronosServer.Hubs
         public Task Client_QuestSessionEventTriggered(UserData sender, QuestEventTriggerDto trigger) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
         public Task Client_QuestSessionBranchingChoice(UserData sender, QuestBranchingChoiceDto choice) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
         public Task Client_McdfShareReceived(string ownerUid, string description) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
+        public Task Client_EstablishmentAffiliationRequested(EstablishmentAffiliationDto dto) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
+        public Task Client_EstablishmentAffiliationResponded(EstablishmentAffiliationDto dto) => throw new PlatformNotSupportedException("Calling clientside method on server not supported");
     }
 }
