@@ -14,6 +14,9 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
+using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.PixelFormats;
 
 namespace MareSynchronosServer.Hubs;
@@ -986,15 +989,26 @@ public partial class MareHub
         }
 
         // --- Handle HRP Profile ---
+        // Le client renvoie la photo déjà en place à chaque sauvegarde : seule une photo qui change est validée,
+        // pour ne pas refuser à chaque enregistrement une image publiée avant la validation.
+        var newHrpPicture = dto.ProfilePictureBase64;
+        if (!string.IsNullOrEmpty(newHrpPicture)
+            && !string.Equals(newHrpPicture, existingHrpData?.Base64ProfileImage, StringComparison.Ordinal)
+            && !IsValidProfilePicture(newHrpPicture))
+        {
+            newHrpPicture = null;
+            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "The profile picture was rejected (invalid image or too large)").ConfigureAwait(false);
+        }
+
         if (existingHrpData != null)
         {
-            if (string.Equals("", dto.ProfilePictureBase64, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals("", newHrpPicture, StringComparison.OrdinalIgnoreCase))
             {
                 existingHrpData.Base64ProfileImage = null;
             }
-            else if (dto.ProfilePictureBase64 != null)
+            else if (newHrpPicture != null)
             {
-                existingHrpData.Base64ProfileImage = dto.ProfilePictureBase64;
+                existingHrpData.Base64ProfileImage = newHrpPicture;
             }
 
             if (dto.IsNSFW != null)
@@ -1012,7 +1026,7 @@ public partial class MareHub
             UserProfileData userProfileData = new()
             {
                 UserUID = dto.User.UID,
-                Base64ProfileImage = dto.ProfilePictureBase64 ?? null,
+                Base64ProfileImage = newHrpPicture,
                 UserDescription = dto.Description ?? null,
                 IsNSFW = dto.IsNSFW ?? false,
             };
@@ -1063,10 +1077,21 @@ public partial class MareHub
             }
 
             var existingRpData = await DbContext.CharacterRpProfiles.SingleOrDefaultAsync(u => u.UserUID == dto.User.UID && u.CharacterName == dto.CharacterName && u.WorldId == dto.WorldId).ConfigureAwait(false);
+
+            // Même règle que la photo HRP : seule une photo qui change est validée.
+            var newRpPicture = dto.RpProfilePictureBase64;
+            if (!string.IsNullOrEmpty(newRpPicture)
+                && !string.Equals(newRpPicture, existingRpData?.RpProfilePictureBase64, StringComparison.Ordinal)
+                && !IsValidProfilePicture(newRpPicture))
+            {
+                newRpPicture = null;
+                await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "The RP profile picture was rejected (invalid image or too large)").ConfigureAwait(false);
+            }
+
             if (existingRpData != null)
             {
                 if (dto.RpDescription != null) existingRpData.RpDescription = dto.RpDescription;
-                if (dto.RpProfilePictureBase64 != null) existingRpData.RpProfilePictureBase64 = dto.RpProfilePictureBase64;
+                if (newRpPicture != null) existingRpData.RpProfilePictureBase64 = newRpPicture;
                 if (bannerChanged) existingRpData.RpBannerBase64 = newBanner;
                 if (cardStyleChanged) existingRpData.RpCardStyle = newCardStyle;
                 if (dto.IsRpNSFW != null) existingRpData.IsRpNSFW = dto.IsRpNSFW.Value;
@@ -1097,7 +1122,7 @@ public partial class MareHub
                     UserUID = dto.User.UID,
                     CharacterName = dto.CharacterName,
                     WorldId = dto.WorldId.Value,
-                    RpProfilePictureBase64 = dto.RpProfilePictureBase64 ?? null,
+                    RpProfilePictureBase64 = newRpPicture,
                     RpBannerBase64 = newBanner,
                     RpCardStyle = newCardStyle,
                     RpDescription = dto.RpDescription ?? null,
@@ -1139,13 +1164,46 @@ public partial class MareHub
     private const int MaxRpBannerBase64Length = 2_800_000;
     private const int MaxRpBannerDimension = 4096;
 
-    private static bool IsValidRpBanner(string base64)
+    // ~1 Mo décodé : le client recadre les photos de profil en 512 × 512, la marge couvre les arrondis d'encodage.
+    private const int MaxProfilePictureBase64Length = 1_400_000;
+    private const int MaxProfilePictureDimension = 1024;
+
+    // Le client réencode les images de profil en PNG ou JPEG : pas d'autres décodeurs sur une donnée joueur
+    // (le TIFF de la config par défaut expose au parsing BigTIFF sans fin, GHSA-wmxv-xphr-5c9g).
+    private static readonly DecoderOptions ProfileImageDecoderOptions = new()
     {
-        if (base64.Length > MaxRpBannerBase64Length) return false;
+        Configuration = new Configuration(new PngConfigurationModule(), new JpegConfigurationModule()),
+    };
+
+    private static bool IsValidRpBanner(string base64)
+        => IsValidProfileImage(base64, MaxRpBannerBase64Length, MaxRpBannerDimension);
+
+    private static bool IsValidProfilePicture(string base64)
+        => IsValidProfileImage(base64, MaxProfilePictureBase64Length, MaxProfilePictureDimension);
+
+    // Images de syncshell et d'établissement : le client envoie le fichier tel quel, 2 Mio au plus (≈ 2,8 M en base64).
+    private const int MaxSharedImageBase64Length = 2_800_000;
+    private const int MaxSharedImageDimension = 4096;
+
+    // Ces clients renvoient les images déjà en place à chaque enregistrement, et null ou vide efface l'image :
+    // seule une image qui change est validée, et une image refusée laisse l'actuelle en place.
+    private static string AcceptChangedSharedImage(string incoming, string current, out bool rejected)
+    {
+        rejected = false;
+        if (string.IsNullOrEmpty(incoming) || string.Equals(incoming, current, StringComparison.Ordinal)) return incoming;
+        if (IsValidProfileImage(incoming, MaxSharedImageBase64Length, MaxSharedImageDimension)) return incoming;
+
+        rejected = true;
+        return current;
+    }
+
+    private static bool IsValidProfileImage(string base64, int maxBase64Length, int maxDimension)
+    {
+        if (base64.Length > maxBase64Length) return false;
         try
         {
-            var info = Image.Identify(Convert.FromBase64String(base64));
-            return info != null && info.Width is > 0 and <= MaxRpBannerDimension && info.Height is > 0 and <= MaxRpBannerDimension;
+            var info = Image.Identify(ProfileImageDecoderOptions, Convert.FromBase64String(base64));
+            return info != null && info.Width is > 0 && info.Width <= maxDimension && info.Height is > 0 && info.Height <= maxDimension;
         }
         catch (Exception)
         {
