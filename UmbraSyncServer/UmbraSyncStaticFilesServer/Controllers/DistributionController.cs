@@ -1,5 +1,6 @@
 ﻿using UmbraSync.API.Routes;
 using MareSynchronosShared.Services;
+using MareSynchronosShared.Utils;
 using MareSynchronosShared.Utils.Configuration;
 using MareSynchronosStaticFilesServer.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -24,6 +25,9 @@ public class DistributionController : ControllerBase
     [Authorize(Policy = "Internal")]
     public async Task<IActionResult> GetFile(string file)
     {
+        // Le nom part aussi dans X-Accel-Redirect : jamais autre chose qu'un hash.
+        if (file == null || !FileHash.IsAccepted(file)) return BadRequest();
+
         _logger.LogInformation($"GetFile:{MareUser}:{file}");
 
         var fi = await _cachedFileProvider.GetAndDownloadFile(file, HttpContext.RequestAborted);
@@ -45,15 +49,29 @@ public class DistributionController : ControllerBase
     [Authorize(Policy = "Internal")]
     public IActionResult TouchFiles([FromBody] string[] files)
     {
-        _logger.LogInformation($"TouchFiles:{MareUser}:{files.Length}");
+        if (files == null) return BadRequest();
 
-        if (files.Length == 0)
+        var user = MareUser;
+        _logger.LogInformation($"TouchFiles:{user}:{files.Length}");
+
+        var hashes = files.Where(f => f != null && FileHash.IsAccepted(f)).ToArray();
+        if (hashes.Length != files.Length)
+            _logger.LogWarning("TouchFiles from {user}: {count} invalid hashes ignored", user, files.Length - hashes.Length);
+
+        if (hashes.Length == 0)
             return Ok();
 
-        Task.Run(() => {
-            foreach (var file in files)
-                _cachedFileProvider.TouchColdHash(file);
-        }).ConfigureAwait(false);
+        _ = Task.Run(() => {
+            try
+            {
+                foreach (var hash in hashes)
+                    _cachedFileProvider.TouchColdHash(hash);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "TouchFiles from {user} failed", user);
+            }
+        });
 
         return Ok();
     }

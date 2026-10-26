@@ -4,6 +4,7 @@ using MareSynchronosShared.Data;
 using MareSynchronosShared.Metrics;
 using MareSynchronosShared.Models;
 using MareSynchronosShared.Services;
+using MareSynchronosShared.Utils;
 using MareSynchronosShared.Utils.Configuration;
 using MareSynchronosStaticFilesServer.Utils;
 using MessagePack.Formatters;
@@ -46,11 +47,11 @@ public class FileCleanupService : IHostedService
     private int CleanupCheckMinutes => _configuration.GetValueOrDefault(nameof(StaticFilesServerConfiguration.CleanupCheckInMinutes), 15);
 
     private List<FileInfo> GetAllHotFiles() => new DirectoryInfo(_hotStoragePath).GetFiles("*", SearchOption.AllDirectories)
-                .Where(f => f != null && f.Name.Length == 40)
+                .Where(f => f != null && FileHash.IsAccepted(f.Name))
                 .OrderBy(f => f.LastAccessTimeUtc).ToList();
 
     private List<FileInfo> GetAllColdFiles() => new DirectoryInfo(_coldStoragePath).GetFiles("*", SearchOption.AllDirectories)
-                .Where(f => f != null && f.Name.Length == 40)
+                .Where(f => f != null && FileHash.IsAccepted(f.Name))
                 .OrderBy(f => f.LastAccessTimeUtc).ToList();
 
     private List<FileInfo> GetTempFiles() => new DirectoryInfo(_useColdStorage ? _coldStoragePath : _hotStoragePath).GetFiles("*", SearchOption.AllDirectories)
