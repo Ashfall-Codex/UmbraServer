@@ -14,9 +14,6 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats;
-using SixLabors.ImageSharp.Formats.Jpeg;
-using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.PixelFormats;
 
 namespace MareSynchronosServer.Hubs;
@@ -989,15 +986,15 @@ public partial class MareHub
         }
 
         // --- Handle HRP Profile ---
-        // Le client renvoie la photo déjà en place à chaque sauvegarde : seule une photo qui change est validée,
-        // pour ne pas refuser à chaque enregistrement une image publiée avant la validation.
+        // Le client renvoie la photo déjà en place à chaque sauvegarde : seule une photo qui change est validée, puis
+        // enregistrée sans ses métadonnées, pour ne pas refuser à chaque enregistrement une image publiée avant la validation.
         var newHrpPicture = dto.ProfilePictureBase64;
         if (!string.IsNullOrEmpty(newHrpPicture)
-            && !string.Equals(newHrpPicture, existingHrpData?.Base64ProfileImage, StringComparison.Ordinal)
-            && !IsValidProfilePicture(newHrpPicture))
+            && !string.Equals(newHrpPicture, existingHrpData?.Base64ProfileImage, StringComparison.Ordinal))
         {
-            newHrpPicture = null;
-            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "The profile picture was rejected (invalid image or too large)").ConfigureAwait(false);
+            newHrpPicture = SanitizeProfilePicture(newHrpPicture);
+            if (newHrpPicture == null)
+                await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "The profile picture was rejected (invalid image or too large)").ConfigureAwait(false);
         }
 
         if (existingHrpData != null)
@@ -1045,10 +1042,10 @@ public partial class MareHub
                 {
                     bannerChanged = true;
                 }
-                else if (IsValidRpBanner(dto.RpBannerBase64))
+                else if (SanitizeRpBanner(dto.RpBannerBase64) is { } banner)
                 {
                     bannerChanged = true;
-                    newBanner = dto.RpBannerBase64;
+                    newBanner = banner;
                 }
                 else
                 {
@@ -1081,11 +1078,11 @@ public partial class MareHub
             // Même règle que la photo HRP : seule une photo qui change est validée.
             var newRpPicture = dto.RpProfilePictureBase64;
             if (!string.IsNullOrEmpty(newRpPicture)
-                && !string.Equals(newRpPicture, existingRpData?.RpProfilePictureBase64, StringComparison.Ordinal)
-                && !IsValidProfilePicture(newRpPicture))
+                && !string.Equals(newRpPicture, existingRpData?.RpProfilePictureBase64, StringComparison.Ordinal))
             {
-                newRpPicture = null;
-                await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "The RP profile picture was rejected (invalid image or too large)").ConfigureAwait(false);
+                newRpPicture = SanitizeProfilePicture(newRpPicture);
+                if (newRpPicture == null)
+                    await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "The RP profile picture was rejected (invalid image or too large)").ConfigureAwait(false);
             }
 
             if (existingRpData != null)
@@ -1168,18 +1165,12 @@ public partial class MareHub
     private const int MaxProfilePictureBase64Length = 1_400_000;
     private const int MaxProfilePictureDimension = 1024;
 
-    // Le client réencode les images de profil en PNG ou JPEG : pas d'autres décodeurs sur une donnée joueur
-    // (le TIFF de la config par défaut expose au parsing BigTIFF sans fin, GHSA-wmxv-xphr-5c9g).
-    private static readonly DecoderOptions ProfileImageDecoderOptions = new()
-    {
-        Configuration = new Configuration(new PngConfigurationModule(), new JpegConfigurationModule()),
-    };
+    // Ces trois fonctions renvoient l'image à enregistrer, sans ses métadonnées, ou null si elle est refusée.
+    private static string SanitizeRpBanner(string base64)
+        => ProfileImageSanitizer.Sanitize(base64, MaxRpBannerBase64Length, MaxRpBannerDimension);
 
-    private static bool IsValidRpBanner(string base64)
-        => IsValidProfileImage(base64, MaxRpBannerBase64Length, MaxRpBannerDimension);
-
-    private static bool IsValidProfilePicture(string base64)
-        => IsValidProfileImage(base64, MaxProfilePictureBase64Length, MaxProfilePictureDimension);
+    private static string SanitizeProfilePicture(string base64)
+        => ProfileImageSanitizer.Sanitize(base64, MaxProfilePictureBase64Length, MaxProfilePictureDimension);
 
     // Images de syncshell et d'établissement : le client envoie le fichier tel quel, 2 Mio au plus (≈ 2,8 M en base64).
     private const int MaxSharedImageBase64Length = 2_800_000;
@@ -1191,24 +1182,11 @@ public partial class MareHub
     {
         rejected = false;
         if (string.IsNullOrEmpty(incoming) || string.Equals(incoming, current, StringComparison.Ordinal)) return incoming;
-        if (IsValidProfileImage(incoming, MaxSharedImageBase64Length, MaxSharedImageDimension)) return incoming;
+        var sanitized = ProfileImageSanitizer.Sanitize(incoming, MaxSharedImageBase64Length, MaxSharedImageDimension);
+        if (sanitized != null) return sanitized;
 
         rejected = true;
         return current;
-    }
-
-    private static bool IsValidProfileImage(string base64, int maxBase64Length, int maxDimension)
-    {
-        if (base64.Length > maxBase64Length) return false;
-        try
-        {
-            var info = Image.Identify(ProfileImageDecoderOptions, Convert.FromBase64String(base64));
-            return info != null && info.Width is > 0 && info.Width <= maxDimension && info.Height is > 0 && info.Height <= maxDimension;
-        }
-        catch (Exception)
-        {
-            return false;
-        }
     }
 
     // Même plafond que le client (ProfileCardStyle.MaxJsonLength) : quelques couleurs et réglages, jamais plus.
