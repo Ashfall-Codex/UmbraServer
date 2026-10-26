@@ -1234,31 +1234,13 @@ public partial class MareHub
             if (tags.Length == 0) tags = null;
         }
 
-        // Validate images (size check only — full validation would use ImageSharp)
-        var profileImage = dto.ProfileImageBase64;
-        if (profileImage != null)
-        {
-            try
-            {
-                var bytes = Convert.FromBase64String(profileImage);
-                if (bytes.Length > 2 * 1024 * 1024) profileImage = null;
-            }
-            catch { profileImage = null; }
-        }
-
-        var bannerImage = dto.BannerImageBase64;
-        if (bannerImage != null)
-        {
-            try
-            {
-                var bytes = Convert.FromBase64String(bannerImage);
-                if (bytes.Length > 2 * 1024 * 1024) bannerImage = null;
-            }
-            catch { bannerImage = null; }
-        }
-
         var profile = await DbContext.GroupProfiles
             .SingleOrDefaultAsync(p => p.GroupGID == dto.Group.GID).ConfigureAwait(false);
+
+        var profileImage = AcceptChangedSharedImage(dto.ProfileImageBase64, profile?.Base64ProfileImage, out var profileImageRejected);
+        var bannerImage = AcceptChangedSharedImage(dto.BannerImageBase64, profile?.Base64BannerImage, out var bannerImageRejected);
+        if (profileImageRejected || bannerImageRejected)
+            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "A syncshell image was rejected (invalid image or too large)").ConfigureAwait(false);
 
         if (profile == null)
         {
