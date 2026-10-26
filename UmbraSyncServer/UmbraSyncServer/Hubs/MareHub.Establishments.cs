@@ -1,3 +1,4 @@
+using UmbraSync.API.Data.Enum;
 using UmbraSync.API.Dto.Establishment;
 using MareSynchronosServer.Utils;
 using MareSynchronosShared.Models;
@@ -25,6 +26,11 @@ public partial class MareHub
         // Le gérant désigné doit être un personnage de l'appelant, sinon on exposerait la fiche d'un autre joueur.
         var managerRpProfileId = await OwnsRpProfileAsync(request.ManagerRpProfileId).ConfigureAwait(false) ? request.ManagerRpProfileId : null;
 
+        var logoImage = AcceptChangedSharedImage(request.LogoImageBase64, null, out var logoRejected);
+        var bannerImage = AcceptChangedSharedImage(request.BannerImageBase64, null, out var bannerRejected);
+        if (logoRejected || bannerRejected)
+            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "An establishment image was rejected (invalid image or too large)").ConfigureAwait(false);
+
         var now = DateTime.UtcNow;
         var establishment = new Establishment
         {
@@ -37,8 +43,8 @@ public partial class MareHub
             FactionTag = request.FactionTag,
             Schedule = request.Schedule,
             IsPublic = request.IsPublic,
-            LogoImageBase64 = request.LogoImageBase64,
-            BannerImageBase64 = request.BannerImageBase64,
+            LogoImageBase64 = logoImage,
+            BannerImageBase64 = bannerImage,
             ManagerRpProfileId = managerRpProfileId,
             ShowManagerOnProfile = true,
             CreatedUtc = now,
@@ -85,8 +91,10 @@ public partial class MareHub
         establishment.FactionTag = request.FactionTag;
         establishment.Schedule = request.Schedule;
         establishment.IsPublic = request.IsPublic;
-        establishment.LogoImageBase64 = request.LogoImageBase64;
-        establishment.BannerImageBase64 = request.BannerImageBase64;
+        establishment.LogoImageBase64 = AcceptChangedSharedImage(request.LogoImageBase64, establishment.LogoImageBase64, out var logoRejected);
+        establishment.BannerImageBase64 = AcceptChangedSharedImage(request.BannerImageBase64, establishment.BannerImageBase64, out var bannerRejected);
+        if (logoRejected || bannerRejected)
+            await Clients.Caller.Client_ReceiveServerMessage(MessageSeverity.Warning, "An establishment image was rejected (invalid image or too large)").ConfigureAwait(false);
         if (request.ManagerRpProfileId != establishment.ManagerRpProfileId)
             establishment.ManagerRpProfileId = await OwnsRpProfileAsync(request.ManagerRpProfileId).ConfigureAwait(false) ? request.ManagerRpProfileId : null;
         establishment.ShowManagerOnProfile = request.ShowManagerOnProfile;
