@@ -1,4 +1,5 @@
 ﻿using UmbraSync.API.Routes;
+using MareSynchronosShared.Utils;
 using MareSynchronosStaticFilesServer.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -36,7 +37,9 @@ public class RequestController : ControllerBase
     {
         try
         {
-            var hashList = files.ToList();
+            var hashList = files?.ToList();
+            if (!AreValidHashes(hashList)) return BadRequest();
+
             var fileList = new List<FileInfo>();
             var notHot = new List<string>();
 
@@ -85,9 +88,22 @@ public class RequestController : ControllerBase
             if (_requestQueue.StillEnqueued(requestId, MareUser, IsPriority))
                 return Ok(new { ready = false, state = "queued" });
 
-            await _requestQueue.EnqueueUser(new(requestId, MareUser, files.ToList()), IsPriority, HttpContext.RequestAborted);
+            var hashList = files?.ToList();
+            if (!AreValidHashes(hashList)) return BadRequest();
+
+            await _requestQueue.EnqueueUser(new(requestId, MareUser, hashList), IsPriority, HttpContext.RequestAborted);
             return Ok(new { ready = false, state = "requeued" });
         }
         catch (OperationCanceledException) { return BadRequest(); }
+    }
+
+    // Un hash invalide faisait lever FilePathUtil plus loin : une 500 au milieu du lot, ou une file d'attente
+    // qui échoue au moment de servir les fichiers.
+    private bool AreValidHashes(List<string> hashes)
+    {
+        if (hashes != null && hashes.TrueForAll(h => h != null && FileHash.IsAccepted(h))) return true;
+
+        _logger.LogWarning("Rejected file request from {user}: invalid hash list", MareUser);
+        return false;
     }
 }

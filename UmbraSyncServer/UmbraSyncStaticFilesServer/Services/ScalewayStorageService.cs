@@ -3,6 +3,7 @@ using Amazon.S3.Model;
 using Amazon.S3.Transfer;
 using MareSynchronosShared.Data;
 using MareSynchronosShared.Services;
+using MareSynchronosShared.Utils;
 using MareSynchronosShared.Utils.Configuration;
 using MareSynchronosStaticFilesServer.Utils;
 using Microsoft.EntityFrameworkCore;
@@ -548,7 +549,7 @@ public sealed class ScalewayStorageService : IHostedService, IDisposable
             {
                 var slashIdx = obj.Key.IndexOf('/');
                 var hash = slashIdx >= 0 ? obj.Key[(slashIdx + 1)..] : obj.Key;
-                result.Add(hash);
+                if (FileHash.IsAccepted(hash)) result.Add(hash);
             }
 
             continuationToken = response.IsTruncated ? response.NextContinuationToken : null;

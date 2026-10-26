@@ -7,6 +7,7 @@ using MareSynchronosShared.Data;
 using MareSynchronosShared.Metrics;
 using MareSynchronosShared.Models;
 using MareSynchronosShared.Services;
+using MareSynchronosShared.Utils;
 using MareSynchronosShared.Utils.Configuration;
 using MareSynchronosStaticFilesServer.Services;
 using MareSynchronosStaticFilesServer.Utils;
@@ -64,7 +65,7 @@ public class ServerFilesController : ControllerBase
     public async Task<IActionResult> FilesGetSizes([FromBody] List<string> hashes)
     {
         var requested = (hashes ?? new List<string>())
-            .Where(h => !string.IsNullOrWhiteSpace(h) && h.Length == 40 && h.All(c => char.IsAsciiHexDigit(c)))
+            .Where(h => h != null && FileHash.IsAccepted(h))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(500)
             .ToList();
@@ -310,7 +311,7 @@ public class ServerFilesController : ControllerBase
     {
         _logger.LogInformation("{user} uploading file {file}", MareUser, hash);
         hash = hash.ToUpperInvariant();
-        if (hash.Length != 40 || !hash.All(char.IsAsciiHexDigit)) return BadRequest();
+        if (!FileHash.IsAccepted(hash)) return BadRequest();
 
         if (await IsServableAsync(hash, requestAborted).ConfigureAwait(false)) return Ok();
 
@@ -555,7 +556,7 @@ public class ServerFilesController : ControllerBase
         _cdnMissRateLimit[MareUser] = now;
 
         var requested = (hashes ?? new List<string>())
-            .Where(h => !string.IsNullOrWhiteSpace(h) && h.Length == 40 && h.All(c => char.IsAsciiHexDigit(c)))
+            .Where(h => h != null && FileHash.IsAccepted(h))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(50)
             .ToList();

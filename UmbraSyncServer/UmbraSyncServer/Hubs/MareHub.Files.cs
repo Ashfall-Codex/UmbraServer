@@ -38,7 +38,7 @@ public partial class MareHub
         }
 
         var candidates = hashes
-            .Where(h => !string.IsNullOrEmpty(h) && HashRegex().IsMatch(h))
+            .Where(h => h != null && FileHash.IsAccepted(h))
             .Select(h => h.ToUpperInvariant())
             .Distinct(StringComparer.Ordinal)
             .Take(FilesReportMissingMaxHashes)

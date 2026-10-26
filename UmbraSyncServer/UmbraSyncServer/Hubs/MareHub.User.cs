@@ -591,7 +591,7 @@ public partial class MareHub
                     || !AllowedExtensionsForGamePaths.Any(e => p.EndsWith(e, StringComparison.OrdinalIgnoreCase))).ToList();
                 replacement.GamePaths = gamePaths.Where(p => !invalidPaths.Contains(p, StringComparer.Ordinal)).ToArray();
                 bool validGamePaths = replacement.GamePaths.Length > 0;
-                bool validHash = string.IsNullOrEmpty(replacement.Hash) || HashRegex().IsMatch(replacement.Hash);
+                bool validHash = string.IsNullOrEmpty(replacement.Hash) || FileHash.IsAccepted(replacement.Hash);
                 bool validFileSwapPath = string.IsNullOrEmpty(replacement.FileSwapPath) || GamePathRegex().IsMatch(replacement.FileSwapPath);
 
                 if (invalidPaths.Count > 0 || !validHash || !validFileSwapPath)
@@ -1208,9 +1208,6 @@ public partial class MareHub
 
     [GeneratedRegex(@"^([a-z0-9_ '+&,\.\-\{\}]+\/)+([a-z0-9_ '+&,\.\-\{\}]+\.[a-z]{3,4})$", RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.ECMAScript)]
     private static partial Regex GamePathRegex();
-
-    [GeneratedRegex(@"^[A-Z0-9]{40}$", RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.ECMAScript)]
-    private static partial Regex HashRegex();
 
     [GeneratedRegex("^[-a-zA-Z0-9@:%._\\+~#=]{1,256}[\\.,][a-zA-Z0-9()]{1,6}\\b(?:[-a-zA-Z0-9()@:%_\\+.~#?&\\/=]*)$")]
     private static partial Regex UrlRegex();
