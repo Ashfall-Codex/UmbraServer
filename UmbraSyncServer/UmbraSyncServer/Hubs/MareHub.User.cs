@@ -594,6 +594,13 @@ public partial class MareHub
                 bool validHash = string.IsNullOrEmpty(replacement.Hash) || FileHash.IsAccepted(replacement.Hash);
                 bool validFileSwapPath = string.IsNullOrEmpty(replacement.FileSwapPath) || GamePathRegex().IsMatch(replacement.FileSwapPath);
 
+                // BLAKE3 annoncé par l'émetteur : relayé tel quel s'il est bien formé, sinon vidé (l'entrée reste).
+                if (!string.IsNullOrEmpty(replacement.Blake3) && !FileHash.IsBlake3(replacement.Blake3))
+                {
+                    _logger.LogCallWarning(MareHubLogger.Args("Invalid Data", "Blake3", replacement.Hash));
+                    replacement.Blake3 = string.Empty;
+                }
+
                 if (invalidPaths.Count > 0 || !validHash || !validFileSwapPath)
                 {
                     _logger.LogCallWarning(MareHubLogger.Args("Invalid Data", "GamePaths", validGamePaths, string.Join(",", invalidPaths), "Hash", validHash, replacement.Hash, "FileSwap", validFileSwapPath, replacement.FileSwapPath));

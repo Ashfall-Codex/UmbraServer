@@ -128,6 +128,7 @@ public class MareDbContext : DbContext
         mb.Entity<FileCache>().HasIndex(c => c.S3Confirmed);
         mb.Entity<FileCache>().Property(c => c.S3Confirmed).HasDefaultValue(false);
         mb.Entity<FileCache>().Property(c => c.S3ConfirmedAt).HasColumnType("timestamp with time zone");
+        mb.Entity<FileCache>().HasIndex(c => c.Blake3Hash);
         mb.Entity<FileBc7Conversion>().ToTable("file_bc7_conversions");
         mb.Entity<FileBc7Conversion>().HasKey(c => c.SourceHash);
         mb.Entity<FileBc7Conversion>().HasIndex(c => c.State);

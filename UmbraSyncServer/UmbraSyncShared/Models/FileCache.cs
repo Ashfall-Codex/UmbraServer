@@ -17,4 +17,8 @@ public class FileCache
     public long Size { get; set; }
     public bool S3Confirmed { get; set; }
     public DateTime? S3ConfirmedAt { get; set; }
+    // BLAKE3 du contenu décompressé, calculé par le serveur lui-même (upload, conversion BC7). null tant
+    // qu'il ne l'a pas calculé : jamais rempli à partir de ce qu'annonce un client.
+    [MaxLength(64)]
+    public string Blake3Hash { get; set; }
 }

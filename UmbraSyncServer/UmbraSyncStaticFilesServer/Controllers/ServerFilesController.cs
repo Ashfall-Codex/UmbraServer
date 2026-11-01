@@ -80,7 +80,7 @@ public class ServerFilesController : ControllerBase
         var cacheFiles = await _mareDbContext.Files
             .AsNoTracking()
             .Where(f => requested.Contains(f.Hash))
-            .Select(k => new { k.Hash, k.Size, k.S3Confirmed, k.Uploaded })
+            .Select(k => new { k.Hash, k.Size, k.S3Confirmed, k.Uploaded, k.Blake3Hash })
             .ToListAsync().ConfigureAwait(false);
 
         var ghosts = await HealGhostRowsAsync(cacheFiles.Select(k => (k.Hash, k.Uploaded, k.S3Confirmed)), HttpContext.RequestAborted).ConfigureAwait(false);
@@ -88,6 +88,8 @@ public class ServerFilesController : ControllerBase
             .Where(k => k.Uploaded && !ghosts.Contains(k.Hash))
             .ToDictionary(k => k.Hash, k => k.Size, StringComparer.OrdinalIgnoreCase);
         var s3ConfirmedDict = cacheFiles.ToDictionary(k => k.Hash, k => k.S3Confirmed, StringComparer.OrdinalIgnoreCase);
+        var blake3Dict = cacheFiles.Where(k => k.Blake3Hash != null)
+            .ToDictionary(k => k.Hash, k => k.Blake3Hash, StringComparer.OrdinalIgnoreCase);
         var forbiddenDict = forbiddenFiles.ToDictionary(f => f.Hash, f => f, StringComparer.OrdinalIgnoreCase);
 
         // BC7 : alternates compressés disponibles pour les hashes demandés.
@@ -104,17 +106,17 @@ public class ServerFilesController : ControllerBase
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         var altRows = altHashes.Count == 0
-            ? new List<(string Hash, long Size, bool S3Confirmed, bool Uploaded)>()
+            ? new List<(string Hash, long Size, bool S3Confirmed, bool Uploaded, string? Blake3Hash)>()
             : (await _mareDbContext.Files.AsNoTracking()
                 .Where(f => altHashes.Contains(f.Hash))
-                .Select(k => new { k.Hash, k.Size, k.S3Confirmed, k.Uploaded })
+                .Select(k => new { k.Hash, k.Size, k.S3Confirmed, k.Uploaded, k.Blake3Hash })
                 .ToListAsync().ConfigureAwait(false))
-                .Select(k => (k.Hash, k.Size, k.S3Confirmed, k.Uploaded)).ToList();
+                .Select(k => (k.Hash, k.Size, k.S3Confirmed, k.Uploaded, Blake3Hash: (string?)k.Blake3Hash)).ToList();
         var altGhosts = await HealGhostRowsAsync(altRows.Select(k => (k.Hash, k.Uploaded, k.S3Confirmed)), HttpContext.RequestAborted).ConfigureAwait(false);
         var altFiles = altRows
             .Where(k => k.Uploaded && !altGhosts.Contains(k.Hash))
-            .Select(k => (k.Hash, k.Size, k.S3Confirmed)).ToList();
-        var altDict = altFiles.ToDictionary(k => k.Hash, k => (k.Size, k.S3Confirmed), StringComparer.OrdinalIgnoreCase);
+            .Select(k => (k.Hash, k.Size, k.S3Confirmed, k.Blake3Hash)).ToList();
+        var altDict = altFiles.ToDictionary(k => k.Hash, k => (k.Size, k.S3Confirmed, k.Blake3Hash), StringComparer.OrdinalIgnoreCase);
         var shardsConfig = _configuration.GetValueOrDefault<ICollection<CdnShardConfiguration>>(
             nameof(StaticFilesServerConfiguration.CdnShardConfiguration),
             Array.Empty<CdnShardConfiguration>());
@@ -203,6 +205,7 @@ public class ServerFilesController : ControllerBase
                         Size = altInfo.Size,
                         Url = baseUrl?.ToString() ?? string.Empty,
                         DirectDownloadUrl = BuildDirectFor(conv.AlternateHash, altInfo.S3Confirmed),
+                        Blake3 = altInfo.Blake3Hash ?? string.Empty,
                     };
                 }
                 else if (conv.State == Bc7ConversionState.Skipped || conv.State == Bc7ConversionState.Failed)
@@ -222,6 +225,7 @@ public class ServerFilesController : ControllerBase
                 DirectDownloadUrl = exists && forbiddenFile == null ? BuildDirectDownloadUrl(hash) : string.Empty,
                 CompressedAlternateFileDownload = altDto,
                 WillNotBeCompressed = willNotBeCompressed,
+                Blake3 = exists && blake3Dict.TryGetValue(hash, out var blake3) ? blake3 : string.Empty,
             });
         }
 
@@ -329,6 +333,7 @@ public class ServerFilesController : ControllerBase
             // Temporaire unique : deux uploads du même hash ne doivent jamais écrire dans le même fichier
             var tmpPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
             long compressedSize = -1;
+            string? blake3Hash = null;
 
             try
             {
@@ -349,8 +354,13 @@ public class ServerFilesController : ControllerBase
 
                     // The decompressed file content is read through LZ4DecoderStream, and written out to HashingStream
                     using var decStream = LZ4Stream.Decode(countStream, extraMemory: 0, leaveOpen: true);
-                    // HashingStream simply hashes the decompressed bytes without writing them anywhere
-                    using var hashStream = new HashingStream(Stream.Null, SHA1.Create());
+                    // HashingStream simply hashes the decompressed bytes without writing them anywhere.
+                    // Deux passages imbriqués : SHA-1 vérifié contre la route, BLAKE3 enregistré pour la
+                    // vérification de bout en bout côté clients.
+                    using var blake3Algo = new Blake3.Blake3HashAlgorithm();
+                    using var blake3Stream = new HashingStream(Stream.Null, blake3Algo);
+                    blake3Stream.DisposeUnderlying = false;
+                    using var hashStream = new HashingStream(blake3Stream, SHA1.Create());
                     hashStream.DisposeUnderlying = false;
 
                     await decStream.CopyToAsync(hashStream, requestAborted).ConfigureAwait(false);
@@ -360,6 +370,7 @@ public class ServerFilesController : ControllerBase
                         .Replace("-", "", StringComparison.Ordinal).ToUpperInvariant();
                     if (!string.Equals(hashString, hash, StringComparison.Ordinal))
                         throw new InvalidOperationException($"Hash does not match file, computed: {hashString}, expected: {hash}");
+                    blake3Hash = Convert.ToHexString(blake3Stream.Finish());
 
                     compressedSize = countStream.BytesRead;
                     await tmpFileStream.FlushAsync(requestAborted).ConfigureAwait(false);
@@ -378,7 +389,7 @@ public class ServerFilesController : ControllerBase
                 throw;
             }
 
-            await SaveUploadedFileRowAsync(hash, compressedSize, requestAborted).ConfigureAwait(false);
+            await SaveUploadedFileRowAsync(hash, compressedSize, blake3Hash, requestAborted).ConfigureAwait(false);
 
             _metricsClient.IncGauge(MetricsAPI.GaugeFilesTotal, 1);
             _metricsClient.IncGauge(MetricsAPI.GaugeFilesTotalSize, compressedSize);
@@ -407,7 +418,7 @@ public class ServerFilesController : ControllerBase
 
     // Crée la ligne, ou réactive une ligne existante (ligne fantôme réparée, compte d'origine supprimé).
     // Le fichier final n'est jamais supprimé en cas d'échec : il est valide et peut être référencé ailleurs.
-    private async Task SaveUploadedFileRowAsync(string hash, long compressedSize, CancellationToken ct)
+    private async Task SaveUploadedFileRowAsync(string hash, long compressedSize, string? blake3Hash, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
         var uploader = MareUser;
@@ -419,6 +430,7 @@ public class ServerFilesController : ControllerBase
                 .SetProperty(f => f.UploadDate, now)
                 .SetProperty(f => f.S3Confirmed, false)
                 .SetProperty(f => f.S3ConfirmedAt, (DateTime?)null)
+                .SetProperty(f => f.Blake3Hash, f => blake3Hash ?? f.Blake3Hash)
                 .SetProperty(f => f.UploaderUID, f => f.UploaderUID ?? uploader), ct)
             .ConfigureAwait(false);
         if (updated > 0)
@@ -436,7 +448,8 @@ public class ServerFilesController : ControllerBase
             Size = compressedSize,
             Uploaded = true,
             S3Confirmed = false,
-            S3ConfirmedAt = null
+            S3ConfirmedAt = null,
+            Blake3Hash = blake3Hash,
         }, ct).ConfigureAwait(false);
 
         try

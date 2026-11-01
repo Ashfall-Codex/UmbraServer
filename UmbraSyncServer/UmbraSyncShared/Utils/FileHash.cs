@@ -1,3 +1,5 @@
+using Blake3;
+
 namespace MareSynchronosShared.Utils;
 
 public enum FileHashAlgorithm
@@ -23,6 +25,18 @@ public static class FileHash
     // pas télécharger.
     public static bool IsAccepted(ReadOnlySpan<char> hash)
         => TryDetect(hash, out var algorithm) && algorithm == FileHashAlgorithm.Sha1;
+
+    public static bool IsBlake3(ReadOnlySpan<char> hash)
+        => TryDetect(hash, out var algorithm) && algorithm == FileHashAlgorithm.Blake3;
+
+    public static string ComputeBlake3(ReadOnlySpan<byte> data)
+    {
+        Span<byte> hash = stackalloc byte[32];
+        using var hasher = Hasher.New();
+        hasher.Update(data);
+        hasher.Finalize(hash);
+        return Convert.ToHexString(hash);
+    }
 
     private static bool IsHex(ReadOnlySpan<char> value)
     {
