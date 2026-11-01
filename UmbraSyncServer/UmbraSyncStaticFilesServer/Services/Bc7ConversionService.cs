@@ -4,6 +4,7 @@ using K4os.Compression.LZ4.Streams;
 using MareSynchronosShared.Data;
 using MareSynchronosShared.Models;
 using MareSynchronosShared.Services;
+using MareSynchronosShared.Utils;
 using MareSynchronosShared.Utils.Configuration;
 using MareSynchronosStaticFilesServer.Utils;
 using Microsoft.EntityFrameworkCore;
@@ -225,9 +226,18 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
 
             // Le hash content-addressed = SHA1 du contenu décompressé (comme tout le reste du système).
             string altHash = Convert.ToHexString(SHA1.HashData(bc7Tex));
+            string altBlake3 = FileHash.ComputeBlake3(bc7Tex);
 
             bool alreadyStored = await db.Files.AnyAsync(f => f.Hash == altHash, ct).ConfigureAwait(false);
-            if (!alreadyStored)
+            if (alreadyStored)
+            {
+                // Même contenu déjà enregistré avant BLAKE3 : on complète sa ligne, le contenu est en mémoire.
+                await db.Files
+                    .Where(f => f.Hash == altHash && f.Blake3Hash == null)
+                    .ExecuteUpdateAsync(u => u.SetProperty(f => f.Blake3Hash, altBlake3), ct)
+                    .ConfigureAwait(false);
+            }
+            else
             {
                 // Attribution : on réutilise l'uploader de la source (UID existant → pas de violation de FK).
                 // Il peut être null si le compte a été supprimé : le fichier source reste valide.
@@ -270,6 +280,7 @@ public sealed class Bc7ConversionService : IHostedService, IDisposable
                         Uploaded = true,
                         S3Confirmed = false,
                         S3ConfirmedAt = null,
+                        Blake3Hash = altBlake3,
                     });
                     await db.SaveChangesAsync(ct).ConfigureAwait(false);
                 }

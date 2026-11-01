@@ -15,6 +15,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<PackageReference Include="Blake3" Version="3.0.2" />
 		<PackageReference Include="ByteSize" Version="2.1.2" />
 		<PackageReference Include="EFCore.NamingConventions" Version="10.0.1" />
 		<PackageReference Include="IDisposableAnalyzers" Version="4.0.8">

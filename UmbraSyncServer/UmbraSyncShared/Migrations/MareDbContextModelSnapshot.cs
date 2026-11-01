@@ -810,6 +810,11 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("character varying(40)")
                         .HasColumnName("hash");
 
+                    b.Property<string>("Blake3Hash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("blake3hash");
+
                     b.Property<bool>("S3Confirmed")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
@@ -845,6 +850,9 @@ namespace MareSynchronosServer.Migrations
 
                     b.HasKey("Hash")
                         .HasName("pk_file_caches");
+
+                    b.HasIndex("Blake3Hash")
+                        .HasDatabaseName("ix_file_caches_blake3hash");
 
                     b.HasIndex("S3Confirmed")
                         .HasDatabaseName("ix_file_caches_s3confirmed");
