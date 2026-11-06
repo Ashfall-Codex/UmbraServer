@@ -147,6 +147,29 @@ public partial class MareHub
             })
             .ToListAsync().ConfigureAwait(false);
 
+        var stageShares = await DbContext.StageShares.AsNoTracking()
+            .Include(s => s.AllowedIndividuals)
+            .Include(s => s.AllowedSyncshells)
+            .Where(s => s.OwnerUID == UserUID)
+            .Select(s => new RgpdStageShareSummaryDto
+            {
+                Id = s.Id,
+                StageName = s.StageName,
+                Description = s.Description,
+                CreatedUtc = s.CreatedUtc,
+                UpdatedUtc = s.UpdatedUtc,
+                AllowedUIDs = s.AllowedIndividuals.Select(a => a.AllowedIndividualUid).ToList(),
+                AllowedGIDs = s.AllowedSyncshells.Select(a => a.AllowedGroupGid).ToList(),
+                EncryptedPayloadSizeBytes = s.CipherData.Length,
+                WorldId = (uint)s.WorldId,
+                TerritoryId = s.TerritoryId,
+                WardId = s.WardId,
+                DivisionId = s.DivisionId,
+                HouseId = s.HouseId,
+                RoomId = s.RoomId,
+            })
+            .ToListAsync().ConfigureAwait(false);
+
         var housingScenarios = await DbContext.HousingScenarios.AsNoTracking()
             .Include(s => s.AllowedIndividuals)
             .Include(s => s.AllowedSyncshells)
@@ -223,6 +246,8 @@ public partial class MareHub
             HousingShares = housingShares,
             HousingScenarioCount = housingScenarios.Count,
             HousingScenarios = housingScenarios,
+            StageShareCount = stageShares.Count,
+            StageShares = stageShares,
             EstablishmentCount = establishments.Count,
             Establishments = establishments,
             WildRpAnnouncementCount = wildRp.Count,
