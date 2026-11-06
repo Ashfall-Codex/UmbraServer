@@ -139,6 +139,11 @@ public static class SharedDbFunctions
             .Include(s => s.AllowedEditors)
             .Where(s => s.OwnerUID == uid).ToListAsync().ConfigureAwait(false));
 
+        dbContext.StageShares.RemoveRange(await dbContext.StageShares
+            .Include(s => s.AllowedIndividuals)
+            .Include(s => s.AllowedSyncshells)
+            .Where(s => s.OwnerUID == uid).ToListAsync().ConfigureAwait(false));
+
         dbContext.EstablishmentAffiliations.RemoveRange(await dbContext.EstablishmentAffiliations.Where(a => a.UserUID == uid).ToListAsync().ConfigureAwait(false));
 
         dbContext.Establishments.RemoveRange(await dbContext.Establishments
@@ -173,6 +178,7 @@ public static class SharedDbFunctions
         dbContext.HousingShareAllowedUsers.RemoveRange(await dbContext.HousingShareAllowedUsers.Where(a => accessIdentifiers.Contains(a.AllowedIndividualUid)).ToListAsync().ConfigureAwait(false));
         dbContext.HousingScenarioAllowedUsers.RemoveRange(await dbContext.HousingScenarioAllowedUsers.Where(a => accessIdentifiers.Contains(a.AllowedIndividualUid)).ToListAsync().ConfigureAwait(false));
         dbContext.HousingScenarioAllowedEditors.RemoveRange(await dbContext.HousingScenarioAllowedEditors.Where(a => accessIdentifiers.Contains(a.EditorUid)).ToListAsync().ConfigureAwait(false));
+        dbContext.StageShareAllowedUsers.RemoveRange(await dbContext.StageShareAllowedUsers.Where(a => accessIdentifiers.Contains(a.AllowedIndividualUid)).ToListAsync().ConfigureAwait(false));
 
         dbContext.Permissions.RemoveRange(await dbContext.Permissions.Where(p => p.UserUID == uid || p.OtherUserUID == uid).ToListAsync().ConfigureAwait(false));
         dbContext.UserDefaultPreferredPermissions.RemoveRange(await dbContext.UserDefaultPreferredPermissions.Where(p => p.UserUID == uid).ToListAsync().ConfigureAwait(false));

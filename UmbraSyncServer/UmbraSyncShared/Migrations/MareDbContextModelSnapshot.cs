@@ -17,7 +17,7 @@ namespace MareSynchronosServer.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.6")
+                .HasAnnotation("ProductVersion", "10.0.14")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -1145,13 +1145,13 @@ namespace MareSynchronosServer.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("cipher_data");
 
-                    b.Property<DateTime>("CreatedUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_utc");
-
                     b.Property<int>("ContentRevision")
                         .HasColumnType("integer")
                         .HasColumnName("content_revision");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
 
                     b.Property<string>("Description")
                         .HasColumnType("text")
@@ -1611,6 +1611,131 @@ namespace MareSynchronosServer.Migrations
                         .HasDatabaseName("ix_slots_server_id_territory_id_ward_id_plot_id");
 
                     b.ToTable("slots", (string)null);
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.StageShare", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<byte[]>("CipherData")
+                        .HasColumnType("bytea")
+                        .HasColumnName("cipher_data");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<int>("DivisionId")
+                        .HasColumnType("integer")
+                        .HasColumnName("division_id");
+
+                    b.Property<int>("HouseId")
+                        .HasColumnType("integer")
+                        .HasColumnName("house_id");
+
+                    b.Property<byte[]>("Nonce")
+                        .HasColumnType("bytea")
+                        .HasColumnName("nonce");
+
+                    b.Property<string>("OwnerUID")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("owner_uid");
+
+                    b.Property<int>("RoomId")
+                        .HasColumnType("integer")
+                        .HasColumnName("room_id");
+
+                    b.Property<byte[]>("Salt")
+                        .HasColumnType("bytea")
+                        .HasColumnName("salt");
+
+                    b.Property<int>("StageFormatVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("stage_format_version");
+
+                    b.Property<string>("StageName")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("stage_name");
+
+                    b.Property<byte[]>("Tag")
+                        .HasColumnType("bytea")
+                        .HasColumnName("tag");
+
+                    b.Property<int>("TerritoryId")
+                        .HasColumnType("integer")
+                        .HasColumnName("territory_id");
+
+                    b.Property<DateTime?>("UpdatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<int>("WardId")
+                        .HasColumnType("integer")
+                        .HasColumnName("ward_id");
+
+                    b.Property<long>("WorldId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("world_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_stage_shares");
+
+                    b.HasIndex("OwnerUID")
+                        .HasDatabaseName("ix_stage_shares_owner_uid");
+
+                    b.HasIndex("WorldId", "TerritoryId", "WardId", "DivisionId", "HouseId", "RoomId")
+                        .HasDatabaseName("ix_stage_shares_world_id_territory_id_ward_id_division_id_hous");
+
+                    b.ToTable("stage_shares", (string)null);
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.StageShareAllowedGroup", b =>
+                {
+                    b.Property<Guid>("ShareId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("share_id");
+
+                    b.Property<string>("AllowedGroupGid")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("allowed_group_gid");
+
+                    b.HasKey("ShareId", "AllowedGroupGid")
+                        .HasName("pk_stage_share_allowed_groups");
+
+                    b.HasIndex("AllowedGroupGid")
+                        .HasDatabaseName("ix_stage_share_allowed_groups_allowed_group_gid");
+
+                    b.ToTable("stage_share_allowed_groups", (string)null);
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.StageShareAllowedUser", b =>
+                {
+                    b.Property<Guid>("ShareId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("share_id");
+
+                    b.Property<string>("AllowedIndividualUid")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("allowed_individual_uid");
+
+                    b.HasKey("ShareId", "AllowedIndividualUid")
+                        .HasName("pk_stage_share_allowed_users");
+
+                    b.HasIndex("AllowedIndividualUid")
+                        .HasDatabaseName("ix_stage_share_allowed_users_allowed_individual_uid");
+
+                    b.ToTable("stage_share_allowed_users", (string)null);
                 });
 
             modelBuilder.Entity("MareSynchronosShared.Models.User", b =>
@@ -2365,6 +2490,41 @@ namespace MareSynchronosServer.Migrations
                     b.Navigation("Group");
                 });
 
+            modelBuilder.Entity("MareSynchronosShared.Models.StageShare", b =>
+                {
+                    b.HasOne("MareSynchronosShared.Models.User", "Owner")
+                        .WithMany()
+                        .HasForeignKey("OwnerUID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_stage_shares_users_owner_uid");
+
+                    b.Navigation("Owner");
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.StageShareAllowedGroup", b =>
+                {
+                    b.HasOne("MareSynchronosShared.Models.StageShare", "Share")
+                        .WithMany("AllowedSyncshells")
+                        .HasForeignKey("ShareId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_stage_share_allowed_groups_stage_shares_share_id");
+
+                    b.Navigation("Share");
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.StageShareAllowedUser", b =>
+                {
+                    b.HasOne("MareSynchronosShared.Models.StageShare", "Share")
+                        .WithMany("AllowedIndividuals")
+                        .HasForeignKey("ShareId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_stage_share_allowed_users_stage_shares_share_id");
+
+                    b.Navigation("Share");
+                });
+
             modelBuilder.Entity("MareSynchronosShared.Models.UserBlock", b =>
                 {
                     b.HasOne("MareSynchronosShared.Models.User", "BlockedUser")
@@ -2503,6 +2663,13 @@ namespace MareSynchronosServer.Migrations
                 });
 
             modelBuilder.Entity("MareSynchronosShared.Models.McdfShare", b =>
+                {
+                    b.Navigation("AllowedIndividuals");
+
+                    b.Navigation("AllowedSyncshells");
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.StageShare", b =>
                 {
                     b.Navigation("AllowedIndividuals");
 

@@ -410,7 +410,12 @@ public partial class MareHub
 
         if (!hrpAllowed && !rpAllowed)
         {
-            return new UserProfileDto(user.User, false, null, null, "Due to the pause status you cannot access this users profile.");
+            // Même réponse que la fiche existe ou non : le lecteur retire sa copie sans apprendre si elle existe encore.
+            var characterRequested = !string.IsNullOrEmpty(user.CharacterName) && user.WorldId.HasValue;
+            return new UserProfileDto(user.User, false, null, null, "Due to the pause status you cannot access this users profile.")
+            {
+                RpVisibility = characterRequested ? RpProfileVisibility.Hidden : null,
+            };
         }
 
         var hrpRow = await DbContext.UserProfileData.SingleOrDefaultAsync(u => u.UserUID == user.User.UID).ConfigureAwait(false);
@@ -969,6 +974,46 @@ public partial class MareHub
             "groups=0",
             "broadcast: SelfPairPermissions + OtherPairPermissions",
             _broadcastPresenceOnPermissionChange ? "presence-broadcast=legacy-enabled" : "no offline/online broadcast"));
+    }
+
+    [Authorize(Policy = "Identified")]
+    public async Task UserDeleteRpProfile(UserDto dto)
+    {
+        _logger.LogCallInfo();
+
+        if (!string.Equals(dto?.User?.UID, UserUID, StringComparison.Ordinal)) throw new HubException("Cannot delete profile data for anyone but yourself");
+        if (string.IsNullOrEmpty(dto.CharacterName) || dto.WorldId is not > 0) throw new HubException("A character is required to delete a RP profile");
+
+        var rpData = await DbContext.CharacterRpProfiles
+            .SingleOrDefaultAsync(u => u.UserUID == UserUID && u.CharacterName == dto.CharacterName && u.WorldId == dto.WorldId.Value)
+            .ConfigureAwait(false);
+        if (rpData == null) return;
+
+        // Sans ce retrait, le repli « aucun gérant désigné » afficherait l'établissement sur les autres fiches du compte.
+        var managedEstablishments = await DbContext.Establishments
+            .Where(e => e.ManagerRpProfileId == rpData.Id)
+            .ToListAsync()
+            .ConfigureAwait(false);
+        foreach (var establishment in managedEstablishments) establishment.ShowManagerOnProfile = false;
+
+        DbContext.CharacterRpProfiles.Remove(rpData);
+        await DbContext.SaveChangesAsync().ConfigureAwait(false);
+
+        // La suppression est validée : un échec de notification ne doit pas être annoncé comme un échec de suppression.
+        try
+        {
+            var allPairedUsers = await GetAllPairedUnpausedUsers().ConfigureAwait(false);
+            var pairs = await GetOnlineUsers(allPairedUsers).ConfigureAwait(false);
+
+            // Le monde seul, sans le nom : une paire ne doit pas découvrir un personnage masqué par cette notification.
+            var notification = new UserDto(dto.User, null, dto.WorldId);
+            await Clients.Users(pairs.Select(p => p.Key)).Client_UserUpdateProfile(notification).ConfigureAwait(false);
+            await Clients.Caller.Client_UserUpdateProfile(notification).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCallWarning(MareHubLogger.Args("Notification failed", ex.Message));
+        }
     }
 
     [Authorize(Policy = "Identified")]

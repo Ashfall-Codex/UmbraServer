@@ -67,6 +67,9 @@ public class MareDbContext : DbContext
     public DbSet<HousingScenarioAllowedUser> HousingScenarioAllowedUsers { get; set; }
     public DbSet<HousingScenarioAllowedGroup> HousingScenarioAllowedGroups { get; set; }
     public DbSet<HousingScenarioAllowedEditor> HousingScenarioAllowedEditors { get; set; }
+    public DbSet<StageShare> StageShares { get; set; }
+    public DbSet<StageShareAllowedUser> StageShareAllowedUsers { get; set; }
+    public DbSet<StageShareAllowedGroup> StageShareAllowedGroups { get; set; }
     public DbSet<Establishment> Establishments { get; set; }
     public DbSet<EstablishmentEvent> EstablishmentEvents { get; set; }
     public DbSet<EstablishmentAffiliation> EstablishmentAffiliations { get; set; }
@@ -85,6 +88,7 @@ public class MareDbContext : DbContext
         ConfigureSlotEntities(mb);
         ConfigureHousingShareEntities(mb);
         ConfigureHousingScenarioEntities(mb);
+        ConfigureStageShareEntities(mb);
         ConfigureEstablishmentEntities(mb);
         ConfigureWildRpEntities(mb);
         ConfigurePermissionEntities(mb);
@@ -294,6 +298,31 @@ public class MareDbContext : DbContext
         mb.Entity<HousingShareAllowedGroup>().ToTable("housing_share_allowed_groups");
         mb.Entity<HousingShareAllowedGroup>().HasKey(g => new { g.ShareId, g.AllowedGroupGid });
         mb.Entity<HousingShareAllowedGroup>().HasIndex(g => g.AllowedGroupGid);
+    }
+
+    private static void ConfigureStageShareEntities(ModelBuilder mb)
+    {
+        mb.Entity<StageShare>().ToTable("stage_shares");
+        mb.Entity<StageShare>().HasIndex(s => s.OwnerUID);
+        mb.Entity<StageShare>().HasIndex(s => new { s.WorldId, s.TerritoryId, s.WardId, s.DivisionId, s.HouseId, s.RoomId });
+        mb.Entity<StageShare>().HasOne(s => s.Owner).WithMany().HasForeignKey(s => s.OwnerUID).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<StageShare>().Property(s => s.Description).HasColumnType("text");
+        mb.Entity<StageShare>().Property(s => s.CipherData).HasColumnType("bytea");
+        mb.Entity<StageShare>().Property(s => s.Nonce).HasColumnType("bytea");
+        mb.Entity<StageShare>().Property(s => s.Salt).HasColumnType("bytea");
+        mb.Entity<StageShare>().Property(s => s.Tag).HasColumnType("bytea");
+        mb.Entity<StageShare>().Property(s => s.CreatedUtc).HasColumnType("timestamp with time zone");
+        mb.Entity<StageShare>().Property(s => s.UpdatedUtc).HasColumnType("timestamp with time zone");
+        mb.Entity<StageShare>().HasMany(s => s.AllowedIndividuals).WithOne(a => a.Share).HasForeignKey(a => a.ShareId).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<StageShare>().HasMany(s => s.AllowedSyncshells).WithOne(a => a.Share).HasForeignKey(a => a.ShareId).OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<StageShareAllowedUser>().ToTable("stage_share_allowed_users");
+        mb.Entity<StageShareAllowedUser>().HasKey(u => new { u.ShareId, u.AllowedIndividualUid });
+        mb.Entity<StageShareAllowedUser>().HasIndex(u => u.AllowedIndividualUid);
+
+        mb.Entity<StageShareAllowedGroup>().ToTable("stage_share_allowed_groups");
+        mb.Entity<StageShareAllowedGroup>().HasKey(g => new { g.ShareId, g.AllowedGroupGid });
+        mb.Entity<StageShareAllowedGroup>().HasIndex(g => g.AllowedGroupGid);
     }
 
     private static void ConfigureHousingScenarioEntities(ModelBuilder mb)
