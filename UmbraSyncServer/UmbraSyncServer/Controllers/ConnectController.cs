@@ -705,8 +705,10 @@ public sealed class ConnectController : ControllerBase
                 if (el.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
                 var name = TryStr(el, "Name") ?? TryStr(el, "name") ?? "";
                 var value = TryStr(el, "Value") ?? TryStr(el, "value") ?? "";
+                var section = (TryStr(el, "Section") ?? TryStr(el, "section") ?? "").Trim();
+                if (section.Length > 30) section = section[..30];
                 if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(value)) continue;
-                items.Add(new { Name = name.Trim(), Value = value.Trim(), Order = idx++ });
+                items.Add(new { Name = name.Trim(), Value = value.Trim(), Order = idx++, Section = section });
             }
             if (items.Count == 0) return null;
             return System.Text.Json.JsonSerializer.Serialize(items);
