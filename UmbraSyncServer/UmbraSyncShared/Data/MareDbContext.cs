@@ -70,6 +70,9 @@ public class MareDbContext : DbContext
     public DbSet<StageShare> StageShares { get; set; }
     public DbSet<StageShareAllowedUser> StageShareAllowedUsers { get; set; }
     public DbSet<StageShareAllowedGroup> StageShareAllowedGroups { get; set; }
+    public DbSet<DecorCatalogEntry> DecorCatalogEntries { get; set; }
+    public DbSet<DecorCatalogFavorite> DecorCatalogFavorites { get; set; }
+    public DbSet<DecorCatalogReport> DecorCatalogReports { get; set; }
     public DbSet<Establishment> Establishments { get; set; }
     public DbSet<EstablishmentEvent> EstablishmentEvents { get; set; }
     public DbSet<EstablishmentAffiliation> EstablishmentAffiliations { get; set; }
@@ -89,6 +92,7 @@ public class MareDbContext : DbContext
         ConfigureHousingShareEntities(mb);
         ConfigureHousingScenarioEntities(mb);
         ConfigureStageShareEntities(mb);
+        ConfigureDecorCatalogEntities(mb);
         ConfigureEstablishmentEntities(mb);
         ConfigureWildRpEntities(mb);
         ConfigurePermissionEntities(mb);
@@ -298,6 +302,34 @@ public class MareDbContext : DbContext
         mb.Entity<HousingShareAllowedGroup>().ToTable("housing_share_allowed_groups");
         mb.Entity<HousingShareAllowedGroup>().HasKey(g => new { g.ShareId, g.AllowedGroupGid });
         mb.Entity<HousingShareAllowedGroup>().HasIndex(g => g.AllowedGroupGid);
+    }
+
+    private static void ConfigureDecorCatalogEntities(ModelBuilder mb)
+    {
+        mb.Entity<DecorCatalogEntry>().ToTable("decor_catalog_entries");
+        mb.Entity<DecorCatalogEntry>().HasIndex(e => e.OwnerUID);
+        mb.Entity<DecorCatalogEntry>().HasIndex(e => e.CreatedUtc);
+        mb.Entity<DecorCatalogEntry>().HasIndex(e => e.DisplayCount);
+        mb.Entity<DecorCatalogEntry>().HasOne(e => e.Owner).WithMany().HasForeignKey(e => e.OwnerUID).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<DecorCatalogEntry>().Property(e => e.Description).HasColumnType("text");
+        mb.Entity<DecorCatalogEntry>().Property(e => e.PreviewImageBase64).HasColumnType("text");
+        mb.Entity<DecorCatalogEntry>().Property(e => e.Content).HasColumnType("bytea");
+        mb.Entity<DecorCatalogEntry>().Property(e => e.CreatedUtc).HasColumnType("timestamp with time zone");
+        mb.Entity<DecorCatalogEntry>().Property(e => e.UpdatedUtc).HasColumnType("timestamp with time zone");
+        mb.Entity<DecorCatalogEntry>().HasMany(e => e.Favorites).WithOne(f => f.Entry).HasForeignKey(f => f.EntryId).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<DecorCatalogEntry>().HasMany(e => e.Reports).WithOne(r => r.Entry).HasForeignKey(r => r.EntryId).OnDelete(DeleteBehavior.Cascade);
+
+        mb.Entity<DecorCatalogFavorite>().ToTable("decor_catalog_favorites");
+        mb.Entity<DecorCatalogFavorite>().HasKey(f => new { f.EntryId, f.UserUID });
+        mb.Entity<DecorCatalogFavorite>().HasIndex(f => f.UserUID);
+        mb.Entity<DecorCatalogFavorite>().HasOne(f => f.User).WithMany().HasForeignKey(f => f.UserUID).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<DecorCatalogFavorite>().Property(f => f.CreatedUtc).HasColumnType("timestamp with time zone");
+
+        mb.Entity<DecorCatalogReport>().ToTable("decor_catalog_reports");
+        mb.Entity<DecorCatalogReport>().HasIndex(r => r.ReportingUserUID);
+        mb.Entity<DecorCatalogReport>().HasOne(r => r.ReportingUser).WithMany().HasForeignKey(r => r.ReportingUserUID).OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<DecorCatalogReport>().Property(r => r.Reason).HasColumnType("text");
+        mb.Entity<DecorCatalogReport>().Property(r => r.ReportDate).HasColumnType("timestamp with time zone");
     }
 
     private static void ConfigureStageShareEntities(ModelBuilder mb)

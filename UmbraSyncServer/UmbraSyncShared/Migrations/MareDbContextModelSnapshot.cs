@@ -527,6 +527,157 @@ namespace MareSynchronosServer.Migrations
                     b.ToTable("client_pairs", (string)null);
                 });
 
+            modelBuilder.Entity("MareSynchronosShared.Models.DecorCatalogEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AnchorTerritory")
+                        .HasColumnType("integer")
+                        .HasColumnName("anchor_territory");
+
+                    b.Property<float>("AnchorX")
+                        .HasColumnType("real")
+                        .HasColumnName("anchor_x");
+
+                    b.Property<float>("AnchorY")
+                        .HasColumnType("real")
+                        .HasColumnName("anchor_y");
+
+                    b.Property<float>("AnchorZ")
+                        .HasColumnType("real")
+                        .HasColumnName("anchor_z");
+
+                    b.Property<byte[]>("Content")
+                        .HasColumnType("bytea")
+                        .HasColumnName("content");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<int>("DisplayCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("display_count");
+
+                    b.Property<int>("FileCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("file_count");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("OwnerUID")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("owner_uid");
+
+                    b.Property<string>("PreviewHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("preview_hash");
+
+                    b.Property<string>("PreviewImageBase64")
+                        .HasColumnType("text")
+                        .HasColumnName("preview_image_base64");
+
+                    b.Property<int>("StageFormatVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("stage_format_version");
+
+                    b.Property<long>("TotalBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("total_bytes");
+
+                    b.Property<DateTime?>("UpdatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_utc");
+
+                    b.HasKey("Id")
+                        .HasName("pk_decor_catalog_entries");
+
+                    b.HasIndex("CreatedUtc")
+                        .HasDatabaseName("ix_decor_catalog_entries_created_utc");
+
+                    b.HasIndex("DisplayCount")
+                        .HasDatabaseName("ix_decor_catalog_entries_display_count");
+
+                    b.HasIndex("OwnerUID")
+                        .HasDatabaseName("ix_decor_catalog_entries_owner_uid");
+
+                    b.ToTable("decor_catalog_entries", (string)null);
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.DecorCatalogFavorite", b =>
+                {
+                    b.Property<Guid>("EntryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("entry_id");
+
+                    b.Property<string>("UserUID")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("user_uid");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.HasKey("EntryId", "UserUID")
+                        .HasName("pk_decor_catalog_favorites");
+
+                    b.HasIndex("UserUID")
+                        .HasDatabaseName("ix_decor_catalog_favorites_user_uid");
+
+                    b.ToTable("decor_catalog_favorites", (string)null);
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.DecorCatalogReport", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<Guid>("EntryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("entry_id");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTime>("ReportDate")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("report_date");
+
+                    b.Property<string>("ReportingUserUID")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("reporting_user_uid");
+
+                    b.HasKey("Id")
+                        .HasName("pk_decor_catalog_reports");
+
+                    b.HasIndex("EntryId")
+                        .HasDatabaseName("ix_decor_catalog_reports_entry_id");
+
+                    b.HasIndex("ReportingUserUID")
+                        .HasDatabaseName("ix_decor_catalog_reports_reporting_user_uid");
+
+                    b.ToTable("decor_catalog_reports", (string)null);
+                });
+
             modelBuilder.Entity("MareSynchronosShared.Models.Establishment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2174,6 +2325,58 @@ namespace MareSynchronosServer.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("MareSynchronosShared.Models.DecorCatalogEntry", b =>
+                {
+                    b.HasOne("MareSynchronosShared.Models.User", "Owner")
+                        .WithMany()
+                        .HasForeignKey("OwnerUID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_decor_catalog_entries_users_owner_uid");
+
+                    b.Navigation("Owner");
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.DecorCatalogFavorite", b =>
+                {
+                    b.HasOne("MareSynchronosShared.Models.DecorCatalogEntry", "Entry")
+                        .WithMany("Favorites")
+                        .HasForeignKey("EntryId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_decor_catalog_favorites_decor_catalog_entries_entry_id");
+
+                    b.HasOne("MareSynchronosShared.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserUID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_decor_catalog_favorites_users_user_uid");
+
+                    b.Navigation("Entry");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.DecorCatalogReport", b =>
+                {
+                    b.HasOne("MareSynchronosShared.Models.DecorCatalogEntry", "Entry")
+                        .WithMany("Reports")
+                        .HasForeignKey("EntryId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_decor_catalog_reports_decor_catalog_entries_entry_id");
+
+                    b.HasOne("MareSynchronosShared.Models.User", "ReportingUser")
+                        .WithMany()
+                        .HasForeignKey("ReportingUserUID")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_decor_catalog_reports_users_reporting_user_uid");
+
+                    b.Navigation("Entry");
+
+                    b.Navigation("ReportingUser");
+                });
+
             modelBuilder.Entity("MareSynchronosShared.Models.Establishment", b =>
                 {
                     b.HasOne("MareSynchronosShared.Models.CharacterRpProfileData", "ManagerRpProfile")
@@ -2639,6 +2842,13 @@ namespace MareSynchronosServer.Migrations
                     b.Navigation("OriginalFiles");
 
                     b.Navigation("Poses");
+                });
+
+            modelBuilder.Entity("MareSynchronosShared.Models.DecorCatalogEntry", b =>
+                {
+                    b.Navigation("Favorites");
+
+                    b.Navigation("Reports");
                 });
 
             modelBuilder.Entity("MareSynchronosShared.Models.Establishment", b =>

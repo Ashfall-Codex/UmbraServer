@@ -93,6 +93,11 @@ internal class DiscordBot : IHostedService
     private async Task ButtonExecutedHandler(SocketMessageComponent arg)
     {
         var id = arg.Data.CustomId;
+        if (id.StartsWith("mare-decor-report-button", StringComparison.Ordinal))
+        {
+            await DecorReportButtonHandler(arg).ConfigureAwait(false);
+            return;
+        }
         if (!id.StartsWith("mare-report-button", StringComparison.Ordinal)) return;
 
         var userId = arg.User.Id;
@@ -223,13 +228,25 @@ internal class DiscordBot : IHostedService
                 {
                     _logger.LogTrace("Checking for Profile Reports");
                     var dbContext = scope.ServiceProvider.GetRequiredService<MareDbContext>();
-                    if (!dbContext.UserProfileReports.Any())
+                    bool hasProfileReports = dbContext.UserProfileReports.Any();
+                    bool hasDecorReports = dbContext.DecorCatalogReports.Any();
+                    if (!hasProfileReports && !hasDecorReports)
                     {
                         continue;
                     }
 
-                    var reports = await dbContext.UserProfileReports.ToListAsync().ConfigureAwait(false);
                     var restChannel = await guild.GetTextChannelAsync(reportChannelId.Value).ConfigureAwait(false);
+                    if (hasDecorReports)
+                    {
+                        await PostDecorReportsAsync(dbContext, restChannel).ConfigureAwait(false);
+                    }
+                    if (!hasProfileReports)
+                    {
+                        await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                        continue;
+                    }
+
+                    var reports = await dbContext.UserProfileReports.ToListAsync().ConfigureAwait(false);
 
                     foreach (var report in reports)
                     {
@@ -289,6 +306,136 @@ internal class DiscordBot : IHostedService
                 _logger.LogWarning(ex, "Failed to process reports");
             }
         }
+    }
+
+    private async Task PostDecorReportsAsync(MareDbContext dbContext, RestTextChannel restChannel)
+    {
+        var reports = await dbContext.DecorCatalogReports.Include(r => r.Entry).ToListAsync().ConfigureAwait(false);
+        foreach (var report in reports)
+        {
+            var entry = report.Entry;
+            if (entry == null)
+            {
+                dbContext.Remove(report);
+                continue;
+            }
+
+            var ownerLodestone = await dbContext.LodeStoneAuth.SingleOrDefaultAsync(u => u.User.UID == entry.OwnerUID).ConfigureAwait(false);
+            var reportingLodestone = await dbContext.LodeStoneAuth.SingleOrDefaultAsync(u => u.User.UID == report.ReportingUserUID).ConfigureAwait(false);
+            int favoriteCount = await dbContext.DecorCatalogFavorites.CountAsync(f => f.EntryId == entry.Id).ConfigureAwait(false);
+
+            EmbedBuilder eb = new();
+            eb.WithTitle("UmbraSync Decor Catalogue Report");
+            eb.AddField("Decor", $"{entry.Name} ({entry.Id})");
+            eb.AddField("Owner", entry.OwnerUID + (ownerLodestone != null ? $" (<@{ownerLodestone.DiscordId}>)" : string.Empty));
+            eb.AddField("Reporting User", report.ReportingUserUID + (reportingLodestone != null ? $" (<@{reportingLodestone.DiscordId}>)" : string.Empty));
+            eb.AddField("Report Date (UTC)", report.ReportDate);
+            eb.AddField("Report Reason", string.IsNullOrWhiteSpace(report.Reason) ? "-" : report.Reason);
+            eb.AddField("Decor Description", string.IsNullOrWhiteSpace(entry.Description) ? "-" : entry.Description);
+            eb.AddField("Displays / Favourites / Files", $"{entry.DisplayCount} / {favoriteCount} / {entry.FileCount} ({entry.TotalBytes / 1024} KiB)");
+
+            var cb = new ComponentBuilder();
+            cb.WithButton("Dismiss Report", customId: $"mare-decor-report-button-dismiss-{entry.Id:N}-{report.ReportingUserUID}", style: ButtonStyle.Primary);
+            cb.WithButton("Delete decor", customId: $"mare-decor-report-button-delete-{entry.Id:N}-{report.ReportingUserUID}", style: ButtonStyle.Secondary);
+            cb.WithButton("Ban owner", customId: $"mare-decor-report-button-banuser-{entry.Id:N}-{report.ReportingUserUID}", style: ButtonStyle.Danger);
+            cb.WithButton("Dismiss and Ban Reporting user", customId: $"mare-decor-report-button-banreporting-{entry.Id:N}-{report.ReportingUserUID}", style: ButtonStyle.Danger);
+
+            if (!string.IsNullOrEmpty(entry.PreviewImageBase64))
+            {
+                var fileName = entry.Id.ToString("N") + "_decor_" + Guid.NewGuid().ToString("N") + ".png";
+                eb.WithImageUrl($"attachment://{fileName}");
+                using MemoryStream ms = new(Convert.FromBase64String(entry.PreviewImageBase64));
+                await restChannel.SendFileAsync(ms, fileName, "Decor Report", embed: eb.Build(), components: cb.Build(), isSpoiler: true).ConfigureAwait(false);
+            }
+            else
+            {
+                await restChannel.SendMessageAsync(embed: eb.Build(), components: cb.Build()).ConfigureAwait(false);
+            }
+
+            dbContext.Remove(report);
+        }
+    }
+
+    private async Task DecorReportButtonHandler(SocketMessageComponent arg)
+    {
+        var id = arg.Data.CustomId;
+        var userId = arg.User.Id;
+        using var scope = _services.CreateScope();
+        using var dbContext = scope.ServiceProvider.GetRequiredService<MareDbContext>();
+        var user = await dbContext.LodeStoneAuth.Include(u => u.User).SingleOrDefaultAsync(u => u.DiscordId == userId).ConfigureAwait(false);
+
+        if (user == null || (!user.User.IsModerator && !user.User.IsAdmin))
+        {
+            EmbedBuilder eb = new();
+            eb.WithTitle("Cannot resolve report");
+            eb.WithDescription($"<@{userId}>: You have no rights to resolve this report");
+            await arg.RespondAsync(embed: eb.Build()).ConfigureAwait(false);
+            return;
+        }
+
+        id = id.Remove(0, "mare-decor-report-button-".Length);
+        var split = id.Split('-', StringSplitOptions.RemoveEmptyEntries);
+        if (split.Length < 3 || !Guid.TryParseExact(split[1], "N", out var entryId)) return;
+
+        var entry = await dbContext.DecorCatalogEntries.SingleOrDefaultAsync(e => e.Id == entryId).ConfigureAwait(false);
+        var builder = arg.Message.Embeds.First().ToEmbedBuilder();
+        switch (split[0])
+        {
+            case "dismiss":
+                builder.AddField("Resolution", $"Dismissed by <@{userId}>");
+                builder.WithColor(Color.Green);
+                break;
+
+            case "delete":
+                builder.AddField("Resolution", entry == null ? $"Decor already gone, dismissed by <@{userId}>" : $"Decor deleted by <@{userId}>");
+                builder.WithColor(Color.Red);
+                if (entry != null) dbContext.DecorCatalogEntries.Remove(entry);
+                break;
+
+            case "banuser":
+                builder.AddField("Resolution", $"Owner has been banned by <@{userId}>");
+                builder.WithColor(Color.DarkRed);
+                if (entry != null)
+                {
+                    var offendingUser = await dbContext.Auth.SingleAsync(u => u.UserUID == entry.OwnerUID).ConfigureAwait(false);
+                    offendingUser.IsBanned = true;
+                    var reg = await dbContext.LodeStoneAuth.SingleOrDefaultAsync(u => u.User.UID == entry.OwnerUID).ConfigureAwait(false);
+                    if (reg != null)
+                    {
+                        dbContext.BannedRegistrations.Add(new MareSynchronosShared.Models.BannedRegistrations { DiscordIdOrLodestoneAuth = reg.HashedLodestoneId });
+                        dbContext.BannedRegistrations.Add(new MareSynchronosShared.Models.BannedRegistrations { DiscordIdOrLodestoneAuth = reg.DiscordId.ToString() });
+                    }
+                    dbContext.DecorCatalogEntries.RemoveRange(dbContext.DecorCatalogEntries.Where(e => e.OwnerUID == entry.OwnerUID));
+                }
+                break;
+
+            case "banreporting":
+                builder.AddField("Resolution", $"Dismissed by <@{userId}>, Reporting user banned");
+                builder.WithColor(Color.DarkGreen);
+                var reportingUser = await dbContext.Auth.SingleOrDefaultAsync(u => u.UserUID == split[2]).ConfigureAwait(false);
+                if (reportingUser != null)
+                {
+                    reportingUser.IsBanned = true;
+                    var regReporting = await dbContext.LodeStoneAuth.SingleOrDefaultAsync(u => u.User.UID == reportingUser.UserUID).ConfigureAwait(false);
+                    if (regReporting != null)
+                    {
+                        dbContext.BannedRegistrations.Add(new MareSynchronosShared.Models.BannedRegistrations { DiscordIdOrLodestoneAuth = regReporting.HashedLodestoneId });
+                        dbContext.BannedRegistrations.Add(new MareSynchronosShared.Models.BannedRegistrations { DiscordIdOrLodestoneAuth = regReporting.DiscordId.ToString() });
+                    }
+                }
+                break;
+
+            default:
+                return;
+        }
+
+        await dbContext.SaveChangesAsync().ConfigureAwait(false);
+        await arg.Message.ModifyAsync(msg =>
+        {
+            msg.Content = arg.Message.Content;
+            msg.Components = null;
+            msg.Embed = new Optional<Embed>(builder.Build());
+        }).ConfigureAwait(false);
     }
 
     private async Task RemoveUsersNotInVanityRole()
