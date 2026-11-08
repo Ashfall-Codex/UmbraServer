@@ -472,6 +472,37 @@ public partial class MareHub
                 ReportReason = r.ReportReason,
             })
             .ToListAsync().ConfigureAwait(false);
+
+        export.DecorCatalogEntries = await DbContext.DecorCatalogEntries.AsNoTracking()
+            .Where(e => e.OwnerUID == UserUID)
+            .Select(e => new RgpdDecorCatalogEntryDto
+            {
+                Id = e.Id,
+                Name = e.Name,
+                Description = e.Description,
+                CreatedUtc = e.CreatedUtc,
+                UpdatedUtc = e.UpdatedUtc,
+                ContentSizeBytes = e.Content.Length,
+                HasPreviewImage = e.PreviewImageBase64 != null,
+                DisplayCount = e.DisplayCount,
+                FavoriteCount = e.Favorites.Count(),
+                AnchorTerritory = e.AnchorTerritory,
+            })
+            .ToListAsync().ConfigureAwait(false);
+        export.DecorCatalogEntryCount = export.DecorCatalogEntries.Count;
+        export.DecorCatalogFavoriteIds = await DbContext.DecorCatalogFavorites.AsNoTracking()
+            .Where(f => f.UserUID == UserUID)
+            .Select(f => f.EntryId)
+            .ToListAsync().ConfigureAwait(false);
+        export.DecorCatalogReportsIssued = await DbContext.DecorCatalogReports.AsNoTracking()
+            .Where(r => r.ReportingUserUID == UserUID)
+            .Select(r => new RgpdDecorCatalogReportDto
+            {
+                EntryId = r.EntryId,
+                ReportDate = r.ReportDate,
+                Reason = r.Reason,
+            })
+            .ToListAsync().ConfigureAwait(false);
     }
 
     [Authorize(Policy = "Identified")]

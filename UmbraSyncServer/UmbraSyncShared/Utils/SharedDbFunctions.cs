@@ -144,6 +144,13 @@ public static class SharedDbFunctions
             .Include(s => s.AllowedSyncshells)
             .Where(s => s.OwnerUID == uid).ToListAsync().ConfigureAwait(false));
 
+        dbContext.DecorCatalogFavorites.RemoveRange(await dbContext.DecorCatalogFavorites.Where(f => f.UserUID == uid).ToListAsync().ConfigureAwait(false));
+        dbContext.DecorCatalogReports.RemoveRange(await dbContext.DecorCatalogReports.Where(r => r.ReportingUserUID == uid).ToListAsync().ConfigureAwait(false));
+        dbContext.DecorCatalogEntries.RemoveRange(await dbContext.DecorCatalogEntries
+            .Include(e => e.Favorites)
+            .Include(e => e.Reports)
+            .Where(e => e.OwnerUID == uid).ToListAsync().ConfigureAwait(false));
+
         dbContext.EstablishmentAffiliations.RemoveRange(await dbContext.EstablishmentAffiliations.Where(a => a.UserUID == uid).ToListAsync().ConfigureAwait(false));
 
         dbContext.Establishments.RemoveRange(await dbContext.Establishments
