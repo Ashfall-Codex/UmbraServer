@@ -16,29 +16,49 @@ public partial class MareHub
     // Track typing-related SignalR group memberships per connection
     private static readonly ConcurrentDictionary<string, HashSet<string>> TypingGroupsByConnection = new(StringComparer.Ordinal);
 
+    private const int MaxTypingChannelIdLength = 64;
+    private const int MaxTypingChannelsPerList = 8;
+
     private static string BuildTypingGroupName(TypingScope scope, string id)
         => $"typing:{scope}:{id}";
+
+    private static string? NormalizeTypingChannelId(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return null;
+
+        string trimmed = id.Trim();
+        if (trimmed.Length > MaxTypingChannelIdLength) return null;
+
+        foreach (char c in trimmed)
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && c is not (':' or '-' or '_')) return null;
+        }
+
+        return trimmed.ToUpperInvariant();
+    }
+
+    private static void AddTypingGroup(HashSet<string> groups, TypingScope scope, string? id)
+    {
+        var normalized = NormalizeTypingChannelId(id);
+        if (normalized != null) groups.Add(BuildTypingGroupName(scope, normalized));
+    }
 
     [Authorize(Policy = "Identified")]
     public async Task UserUpdateTypingChannels(TypingChannelsDto channels)
     {
         _logger.LogCallInfo(MareHubLogger.Args("UpdateTypingChannels"));
 
+        if (channels == null) return;
+
         var desired = new HashSet<string>(StringComparer.Ordinal);
 
-        if (!string.IsNullOrWhiteSpace(channels.PartyId)) desired.Add(BuildTypingGroupName(TypingScope.Party, channels.PartyId));
-        if (!string.IsNullOrWhiteSpace(channels.AllianceId)) desired.Add(BuildTypingGroupName(TypingScope.Alliance, channels.AllianceId));
-        if (!string.IsNullOrWhiteSpace(channels.FreeCompanyId)) desired.Add(BuildTypingGroupName(TypingScope.FreeCompany, channels.FreeCompanyId));
-        if (channels.CrossPartyIds != null)
-        {
-            foreach (var id in channels.CrossPartyIds.Where(s => !string.IsNullOrWhiteSpace(s)))
-                desired.Add(BuildTypingGroupName(TypingScope.CrossParty, id!));
-        }
-        if (channels.CustomGroupIds != null)
-        {
-            foreach (var id in channels.CustomGroupIds.Where(s => !string.IsNullOrWhiteSpace(s)))
-                desired.Add(BuildTypingGroupName(TypingScope.Unknown, id!));
-        }
+        AddTypingGroup(desired, TypingScope.Party, channels.PartyId);
+        AddTypingGroup(desired, TypingScope.Alliance, channels.AllianceId);
+        AddTypingGroup(desired, TypingScope.FreeCompany, channels.FreeCompanyId);
+        foreach (var id in (channels.CrossPartyIds ?? []).Take(MaxTypingChannelsPerList))
+            AddTypingGroup(desired, TypingScope.CrossParty, id);
+        foreach (var id in (channels.CustomGroupIds ?? []).Take(MaxTypingChannelsPerList))
+            AddTypingGroup(desired, TypingScope.Unknown, id);
 
         var connId = Context.ConnectionId;
         var current = TypingGroupsByConnection.GetOrAdd(connId, _ => new HashSet<string>(StringComparer.Ordinal));
@@ -63,6 +83,8 @@ public partial class MareHub
     [Authorize(Policy = "Identified")]
     public async Task UserSetTypingStateEx(TypingStateExDto dto)
     {
+        if (dto == null) return;
+
         _logger.LogCallInfo(MareHubLogger.Args("TypingEx", dto.IsTyping, dto.Scope));
 
         var sender = await DbContext.Users.AsNoTracking().SingleAsync(u => u.UID == UserUID).ConfigureAwait(false);
@@ -91,8 +113,9 @@ public partial class MareHub
             case TypingScope.FreeCompany:
             case TypingScope.CrossParty:
             {
-                if (string.IsNullOrWhiteSpace(dto.ChannelId)) return;
-                var grp = BuildTypingGroupName(scope, dto.ChannelId!);
+                var channelId = NormalizeTypingChannelId(dto.ChannelId);
+                if (channelId == null) return;
+                var grp = BuildTypingGroupName(scope, channelId);
                 await Clients.GroupExcept(grp, new[] { Context.ConnectionId }).Client_UserTypingState(typingDto).ConfigureAwait(false);
                 break;
             }
