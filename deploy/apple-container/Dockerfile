@@ -12,10 +12,12 @@ ARG TARGETARCH
 RUN test -n "$PROJECT" || (echo "build arg PROJECT manquant" >&2 && exit 1)
 WORKDIR /src
 COPY . .
-RUN arch="$TARGETARCH"; [ "$arch" = "amd64" ] && arch=x64; \
+RUN --mount=type=secret,id=sixlabors_license \
+    arch="$TARGETARCH"; [ "$arch" = "amd64" ] && arch=x64; \
+    lic=""; [ -s /run/secrets/sixlabors_license ] && lic="-p:SixLaborsLicenseFile=/run/secrets/sixlabors_license"; \
     dotnet publish "UmbraSyncServer/${PROJECT}/${PROJECT}.csproj" \
       -c Release -a "${arch:-arm64}" -o /out --no-self-contained \
-      -p:UseAppHost=false -p:TreatWarningsAsErrors=false
+      -p:UseAppHost=false -p:TreatWarningsAsErrors=false $lic
 
 # Aucune instruction RUN ici : l'étape finale ne s'exécute jamais, pas besoin d'émuler arm64.
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
