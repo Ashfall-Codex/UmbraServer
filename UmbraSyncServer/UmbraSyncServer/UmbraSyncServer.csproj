@@ -39,8 +39,15 @@
     <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
   </ItemGroup>
 
+  <ItemGroup Condition="'$(UseLocalUmbraApi)' == 'true'">
+    <ProjectReference Include="$(UmbraApiProject)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalUmbraApi)' != 'true'">
+    <PackageReference Include="Ashfall.UmbraSync.Api" Version="$(UmbraApiVersion)" />
+  </ItemGroup>
+
   <ItemGroup>
-    <ProjectReference Include="..\..\UmbraAPI\UmbraSyncAPI\UmbraSync.API.csproj" />
     <ProjectReference Include="..\UmbraSyncShared\UmbraSyncShared.csproj" />
   </ItemGroup>
 
