@@ -58,6 +58,8 @@ jobs:
           file: deploy/apple-container/Dockerfile
           platforms: linux/arm64
           build-args: PROJECT=${{ matrix.project }}
+          secrets: |
+            sixlabors_license=${{ secrets.SIXLABORS_LICENSE }}
           push: true
           provenance: false
           tags: |
