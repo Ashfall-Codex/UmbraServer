@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <UmbraApiVersion>5002.0.0</UmbraApiVersion>
+    <UmbraApiProject>$(MSBuildThisFileDirectory)../UmbraAPI/UmbraSyncAPI/UmbraSync.API.csproj</UmbraApiProject>
+    <UseLocalUmbraApi Condition="'$(UseLocalUmbraApi)' == '' and Exists('$(UmbraApiProject)')">true</UseLocalUmbraApi>
+  </PropertyGroup>
+</Project>

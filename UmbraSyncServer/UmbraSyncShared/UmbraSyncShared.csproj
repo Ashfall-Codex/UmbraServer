@@ -52,8 +52,12 @@
 		<PackageReference Include="System.Linq.Async" Version="6.0.3" />
 	</ItemGroup>
 
-	<ItemGroup>
-	  <ProjectReference Include="..\..\UmbraAPI\UmbraSyncAPI\UmbraSync.API.csproj" />
+	<ItemGroup Condition="'$(UseLocalUmbraApi)' == 'true'">
+		<ProjectReference Include="$(UmbraApiProject)" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(UseLocalUmbraApi)' != 'true'">
+		<PackageReference Include="Ashfall.UmbraSync.Api" Version="$(UmbraApiVersion)" />
 	</ItemGroup>
 
 </Project>
