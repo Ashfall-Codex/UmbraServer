@@ -322,12 +322,24 @@ public partial class MareHub
     public async Task<McdfSharePayloadDto?> McdfShareDownload(Guid shareId)
     {
         _logger.LogCallInfo(MareHubLogger.Args(shareId));
+        return await BuildMcdfSharePayloadAsync(shareId, McdfInlineDownloadLimit).ConfigureAwait(false);
+    }
 
+    [Authorize(Policy = "Identified")]
+    public async Task<McdfSharePayloadDto?> McdfShareDownloadInfo(Guid shareId)
+    {
+        _logger.LogCallInfo(MareHubLogger.Args(shareId));
+        return await BuildMcdfSharePayloadAsync(shareId, 0).ConfigureAwait(false);
+    }
+
+    private async Task<McdfSharePayloadDto?> BuildMcdfSharePayloadAsync(Guid shareId, long inlineLimit)
+    {
         var share = await GetAccessibleShareAsync(shareId, track: true).ConfigureAwait(false);
         if (share == null) return null;
 
-        byte[] cipher = share.CipherData;
         long cipherLength = share.IsFileBacked ? share.CipherLength : share.CipherData.LongLength;
+        bool inline = cipherLength <= inlineLimit;
+        byte[] cipher = inline && !share.IsFileBacked ? share.CipherData : Array.Empty<byte>();
         if (share.IsFileBacked)
         {
             var path = _mcdfStorage.GetPath(share.Id);
@@ -337,9 +349,7 @@ public partial class MareHub
                 return null;
             }
 
-            cipher = cipherLength <= McdfInlineDownloadLimit
-                ? await File.ReadAllBytesAsync(path).ConfigureAwait(false)
-                : Array.Empty<byte>();
+            if (inline) cipher = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
         }
 
         share.DownloadCount++;
