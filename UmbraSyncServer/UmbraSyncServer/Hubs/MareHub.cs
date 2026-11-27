@@ -139,6 +139,7 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
                 if (!_userConnections.TryGetValue(UserUID, out var currentConnectionId)
                     || !string.Equals(currentConnectionId, Context.ConnectionId, StringComparison.Ordinal))
                 {
+                    _logger.LogCallWarning(MareHubLogger.Args("Unhealthy_NotCurrentConnection", Context.ConnectionId, "Current", currentConnectionId ?? "none"));
                     return false;
                 }
 
@@ -149,8 +150,9 @@ public partial class MareHub : Hub<IMareHub>, IMareHub
             await _redis.AddAsync($"active:{UserCharaIdent}", Context.ConnectionId, expiresIn: TimeSpan.FromMinutes(5)).ConfigureAwait(false);
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogWarning(ex, "CheckClientHealth|Unhealthy_Exception|{type}", ex.GetType().Name);
             return false;
         }
     }
